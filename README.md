@@ -1,6 +1,8 @@
 - 👋 Hi, I'am @Isaias077
-- 👀 Interested on Machine Learning
-- 🌱 Learning React Native 
+- 🎓 Student at National University of San Juan
+- 💼 Working in Technological Center - UNSJ
+- 📈 Entrepreneurship <NamUs
+- 🌱 Learning Architecture of Software
 - 💞️ I search collaborate on JavaScript Projects
 - 📫 You can contact me with email: abdel07noguera@gmail.com
 
