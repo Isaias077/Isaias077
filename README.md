@@ -1,6 +1,6 @@
 - 👋 Hi, I'am @Isaias077
 - 🎓 Student at National University of San Juan - Computer Science
-- 💼 Working in Technological Center - UNSJ
+- 💼 Working in DigiChanges
 - 📈 Entrepreneurship <NamUs
 - 🌱 Learning Architecture of Software
 - 💞️ I search collaborate on JavaScript Projects
