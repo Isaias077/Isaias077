@@ -1,7 +1,6 @@
 - 👋 Hi, I'am @Isaias077
 - 🎓 Student at National University of San Juan - Computer Science
-- 💼 Working in DigiChanges
-- 📈 Entrepreneurship <NamUs
+- 💼 Working in <NamUs
 - 🌱 Learning Architecture of Software
 - 💞️ I search collaborate on JavaScript Projects
 - 📫 You can contact me with email: abdel07noguera@gmail.com
