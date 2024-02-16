@@ -1,6 +1,6 @@
 - 👋 Hi, I'am @Isaias077
 - 🎓 Student at Palermo University - Computer engineering
-- 💼 Working in <NamUs and Santander Bank S.A
+- 💼 Working in <NamUs
 - 🌱 Learning Architecture of Software
 - 💞️ I search collaborate on JavaScript Projects
 - 📫 You can contact me with email: abdel07noguera@gmail.com
