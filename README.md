@@ -1,6 +1,6 @@
 # ¡Hola! Soy Isaías 👋
 
-### Senior Backend Engineer & Software Architect
+### Senior Backend Engineer
 
 Soy un Ingeniero de Software apasionado por **diseñar y construir sistemas distribuidos complejos desde cero**. Me fascina ver cómo la arquitectura de software robusta se traduce en productos escalables y de alto impacto que realmente aportan valor.
 
