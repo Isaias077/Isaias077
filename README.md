@@ -2,7 +2,7 @@
 
 ### Senior Backend Engineer
 
-Soy un Ingeniero de Software apasionado por **diseñar y construir sistemas distribuidos complejos desde cero**. Me fascina ver cómo la arquitectura de software robusta se traduce en productos escalables y de alto impacto que realmente aportan valor.
+Soy un Ingeniero de Software y estudiante de M.Sc IA especializado en Sistemas Autonomos Criticos y IA aplicado a la medicina soy un apasionado por **diseñar y construir sistemas distribuidos complejos desde cero**. Me fascina ver cómo la arquitectura de software robusta se traduce en productos escalables y de alto impacto que realmente aportan valor.
 
 Actualmente estoy explorando activamente nuevas oportunidades donde pueda contribuir en el diseño de sistemas de misión crítica y resolver desafíos técnicos complejos.
 
