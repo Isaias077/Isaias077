@@ -159,3 +159,17 @@ def test_same_days_comparison():
     r = hz.same_days_comparison(month, value, 26)
     assert r["mediana"] == 10.0 and r["anomalia"] == pytest.approx(21 / 11)
     assert r["percentil"] == 100.0 and r["anios_de_referencia"] == 2
+
+
+def test_default_key_is_used_unless_the_environment_overrides_it(tmp_path, monkeypatch):
+    _archive(tmp_path)
+    monkeypatch.setattr(ingest, "DATA_DIR", str(tmp_path))
+    seen = []
+    monkeypatch.setattr(ingest, "_api_get", lambda url: seen.append(url) or _fake_api(url))
+    monkeypatch.delenv("FIRMS_MAP_KEY", raising=False)
+    ingest.ingest_recent("Paraguay", today=date(2026, 1, 3), workers=1)
+    assert f"/{ingest.DEFAULT_MAP_KEY}/" in seen[0]
+    seen.clear()
+    monkeypatch.setenv("FIRMS_MAP_KEY", "OTRA")
+    ingest.ingest_recent("Paraguay", today=date(2026, 1, 3), workers=1)
+    assert "/OTRA/" in seen[0] and all(ingest.DEFAULT_MAP_KEY not in u for u in seen)

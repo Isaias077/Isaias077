@@ -25,15 +25,19 @@ interés.
 ```bash
 pip install -r requirements.txt
 python -m server.ingest --country Paraguay            # 2000 a 2025, sin clave (~500 MB)
-export FIRMS_MAP_KEY=tu_clave                         # gratuita en firms.modaps.eosdis.nasa.gov/api/map_key
 python -m server.ingest --country Paraguay --recent   # año en curso, por la API
 uvicorn server.app:app --port 8000
 ```
 
 Para mantener el año en curso al día, repetí el paso `--recent` una vez por día
 (por ejemplo con cron). Solo vuelve a pedir la última semana; el resto queda en
-`data/raw/api/`. La clave se lee de la variable de entorno y nunca se guarda en
-archivos ni aparece en los mensajes de error.
+`data/raw/api/`.
+
+La MAP_KEY de FIRMS está escrita en `server/ingest.py` (`DEFAULT_MAP_KEY`), así
+que `--recent` funciona sin configurar nada. Para usar otra, definí la variable
+de entorno `FIRMS_MAP_KEY`, que tiene prioridad. Cada clave admite 5000 pedidos
+cada 10 minutos, compartidos entre todos los que la usen; una carga completa del
+año en curso para un país usa unos 130.
 
 Después abre http://localhost:8000. El nombre del país va en inglés, como lo
 escribe FIRMS (`Argentina`, `Brazil`, `Bolivia`…). Se pueden cargar varios
@@ -114,8 +118,9 @@ predicho difiere del observado en un 7 % en un mes típico.
 
 ## Límites
 
-- **El año en curso depende de la API y de su clave.** Sin `--recent`, la serie
-  termina en diciembre del año pasado.
+- **El año en curso depende de la API.** Sin `--recent`, la serie termina en
+  diciembre del año pasado. Si FIRMS revoca la clave del proyecto o se agota su
+  cupo, hay que pedir otra y ponerla en `FIRMS_MAP_KEY`.
 - **Los datos NRT se reprocesan.** FIRMS reemplaza los NRT por los SP unos meses
   después; volver a correr `--recent` baja la versión SP cuando aparece. Los
   últimos meses pueden cambiar un poco.

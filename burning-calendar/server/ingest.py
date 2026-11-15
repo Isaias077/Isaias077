@@ -7,10 +7,11 @@ Años completos: FIRMS publica sin clave un CSV por país y por año, MODIS (Ter
 Aqua) desde noviembre de 2000 y VIIRS S-NPP (375 m) desde enero de 2012. Se guardan
 en data/raw/ y se compactan en data/<país>.npz.
 
-Año en curso: llega por la API de área de FIRMS, que necesita una MAP_KEY gratuita
-(variable de entorno FIRMS_MAP_KEY). Usa el archivo estándar (SP) mientras exista y
-el de tiempo casi real (NRT) después, recorta el rectángulo con el contorno del país
-y guarda data/<país>_reciente.npz con la cobertura de cada sensor.
+Año en curso: llega por la API de área de FIRMS con la MAP_KEY del proyecto
+(DEFAULT_MAP_KEY); la variable de entorno FIRMS_MAP_KEY la reemplaza si existe.
+Usa el archivo estándar (SP) mientras exista y el de tiempo casi real (NRT)
+después, recorta el rectángulo con el contorno del país y guarda
+data/<país>_reciente.npz con la cobertura de cada sensor.
 """
 from __future__ import annotations
 
@@ -33,6 +34,8 @@ EPOCH = date(2000, 1, 1)
 SAT_CODES = {"TERRA": 0, "T": 0, "AQUA": 1, "A": 1, "N": 2}
 SAT_NAMES = ["Terra", "Aqua", "S-NPP"]
 API = "https://firms.modaps.eosdis.nasa.gov/api"
+# MAP_KEY del proyecto. La variable de entorno FIRMS_MAP_KEY, si existe, tiene prioridad.
+DEFAULT_MAP_KEY = "886fbfe84331ca5604e368739a65e172"
 API_MAX_DAYS = 5
 API_SOURCES = {"MODIS": ("MODIS_SP", "MODIS_NRT"), "VIIRS": ("VIIRS_SNPP_SP", "VIIRS_SNPP_NRT")}
 NO_TYPE = 255          # las fuentes NRT no traen la columna "type"
@@ -212,10 +215,7 @@ def ingest_recent(country: str, key: str | None = None, workers: int = 3,
     """Año en curso por la API, recortado al país y guardado con su cobertura."""
     from .borders import CountryMask
 
-    key = key or os.environ.get("FIRMS_MAP_KEY")
-    if not key:
-        raise SystemExit("Falta la MAP_KEY de FIRMS: definí la variable FIRMS_MAP_KEY. "
-                         "Es gratuita: https://firms.modaps.eosdis.nasa.gov/api/map_key/")
+    key = key or os.environ.get("FIRMS_MAP_KEY") or DEFAULT_MAP_KEY
     name = country.replace(" ", "_")
     archive_path = os.path.join(DATA_DIR, f"{name}.npz")
     if not os.path.exists(archive_path):
@@ -283,8 +283,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--country", required=True, help="nombre en inglés, como en FIRMS")
     ap.add_argument("--last-year", type=int)
-    ap.add_argument("--recent", action="store_true",
-                    help="bajar el año en curso por la API (necesita FIRMS_MAP_KEY)")
+    ap.add_argument("--recent", action="store_true", help="bajar el año en curso por la API")
     args = ap.parse_args()
     try:
         if args.recent:
