@@ -121,3 +121,59 @@ def test_holdout_pass_is_verified_but_not_assimilated():
     assert v["platform"] == "NOAA-21" and v["n_detected"] == held.detected.sum()
     assert v["filtro_hits"] + v["filtro_misses"] == v["n_detected"]
     assert 0.5 * v["obs_total"] < v["filtro_total"] < 2.0 * v["obs_total"]
+
+
+def _fire_and_modis():
+    truth = np.zeros((40, 40))
+    truth[16:24, 16:24] = 30.0
+    return truth, MODIS.__class__(**{**MODIS.__dict__, "bias": 0.7})
+
+
+def test_bias_is_frozen_for_an_isolated_modis_pass():
+    truth, modis = _fire_and_modis()
+    flt = _filter()
+    flt.assimilate(observe(VIIRS, "NOAA-20", 10.0, 0.0, truth, np.random.default_rng(1), 0.0))
+    # tres horas después, sin ningún VIIRS cerca: el sesgo no se toca
+    flt.assimilate(observe(modis, "Terra", 13.0, 5.0, truth, np.random.default_rng(2), 0.0))
+    assert flt.bias_updates == 0 and flt.log_b == 0.0
+
+
+def test_bias_updates_when_modis_follows_viirs_closely():
+    truth, modis = _fire_and_modis()
+    flt = _filter()
+    flt.assimilate(observe(VIIRS, "S-NPP", 13.4, 0.0, truth, np.random.default_rng(1), 0.0))
+    flt.assimilate(observe(modis, "Aqua", 13.6, 5.0, truth, np.random.default_rng(2), 0.0))
+    assert flt.bias_updates == 1
+    assert 0.6 < np.exp(flt.log_b) < 0.9
+
+
+def test_bias_updates_when_viirs_follows_modis_closely():
+    truth, modis = _fire_and_modis()
+    flt = _filter()
+    flt.assimilate(observe(VIIRS, "NOAA-20", 9.0, 0.0, truth, np.random.default_rng(1), 0.0))
+    flt.assimilate(observe(modis, "Aqua", 13.4, 5.0, truth, np.random.default_rng(2), 0.0))
+    assert flt.bias_updates == 0                      # todavía sin referencia cercana
+    flt.assimilate(observe(VIIRS, "S-NPP", 13.7, 0.0, truth, np.random.default_rng(3), 0.0))
+    assert flt.bias_updates == 1 and np.exp(flt.log_b) < 0.95
+    assert flt.pending_modis is None
+
+
+def test_wind_is_inferred_from_the_drift_of_the_viirs_centroid():
+    """Un frente que avanza hacia el este debe llevar wind_x hacia valores positivos."""
+    from frp_enkf.model import step
+    true_p = FireParams(wind_x=0.6, wind_y=0.0, sigma_proc=0.0)
+    x = np.zeros((48, 48))
+    x[21:27, 14:20] = 25.0
+    f = np.full((48, 48), 0.9)
+    rng = np.random.default_rng(0)
+    members = FireParams().perturbed(40, rng, wind_sd=0.3)       # viento a priori: (0, 0)
+    flt = FireFilter(np.full((40, 48, 48), 0.9), members, rng, FilterConfig())
+    t = 10.0
+    for n_pass in range(5):
+        flt.assimilate(observe(VIIRS, "S-NPP", t, 0.0, x, np.random.default_rng(n_pass), 0.0))
+        for k in range(18):                                      # tres horas hasta la siguiente
+            x, f = step(x, f, true_p, 1.0 / 6.0, t)
+            flt.forecast(1.0 / 6.0, t)
+            t += 1.0 / 6.0
+    assert np.mean(flt.params.wind_x) > 0.15
+    assert abs(np.mean(flt.params.wind_y)) < 0.5 * np.mean(flt.params.wind_x)

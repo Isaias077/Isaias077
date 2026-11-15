@@ -27,7 +27,8 @@
   "frp_total_maximo_mw": 3918.7289163976243,
   "suma_maxima_de_una_pasada_mw": 2088.3900000000003,
   "sesgo_modis_sobre_viirs": {
-    "b": 0.9541583367404641,
-    "desvio_log": 0.288018142593594
+    "b": 1.0,
+    "desvio_log": 0.3,
+    "pares_casi_simultaneos": 0
   }
 }

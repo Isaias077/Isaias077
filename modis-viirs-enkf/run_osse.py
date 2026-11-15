@@ -44,11 +44,16 @@ def main() -> None:
     both = runs["MODIS + VIIRS"][0]
     b_hat, b_sd = both.bias_trace[-1][1:]
     print(f"\nSesgo MODIS/VIIRS estimado: {b_hat:.3f} (±{b_sd:.3f} en log); real: {MODIS.bias:.2f}")
+    wind = (both.log[-1]["wind_x"], both.log[-1]["wind_y"])
+    print(f"Viento efectivo estimado: ({wind[0]:.2f}, {wind[1]:.2f}); supuesto inicial: "
+          f"({sc.model.wind_x:.2f}, {sc.model.wind_y:.2f}); real: "
+          f"({sc.truth.wind_x:.2f}, {sc.truth.wind_y:.2f})")
 
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "metrics.json"), "w") as fh:
         json.dump({"seed": args.seed, "members": args.members, "scores": scores,
-                   "bias_estimate": b_hat, "bias_log_sd": b_sd, "bias_true": MODIS.bias},
+                   "bias_estimate": b_hat, "bias_log_sd": b_sd, "bias_true": MODIS.bias,
+                   "wind_estimate": wind, "wind_true": (sc.truth.wind_x, sc.truth.wind_y)},
                   fh, indent=2, ensure_ascii=False)
     if not args.no_figures:
         plots.fig_problem(truth, os.path.join(args.out, "1_problema.png"))

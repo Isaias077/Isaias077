@@ -27,11 +27,16 @@ class FilterConfig:
     estimate_bias: bool = True  # estimar en línea el sesgo MODIS/VIIRS
     bias_prior_sd: float = 0.3  # desvío a priori de log(b)
     bias_walk_sd: float = 0.02  # caminata aleatoria de log(b) por pasada
-    bias_drift_per_h: float = 0.08  # desconfianza por hora desde el último VIIRS
+    bias_drift_per_h: float = 0.08  # desconfianza por hora de separación con el VIIRS
+    bias_max_gap_h: float = 0.75    # el sesgo solo se actualiza con un VIIRS a menos de esto
     birth_fuel_weight: float = 0.5  # 0: combustible a priori; 1: el que explica la intensidad
     estimate_params: bool = False   # ajustar en línea las tasas del modelo de fuego
     param_obs_sd: float = 0.3       # error (log) del FRP total usado para ajustarlas
     param_min_sd: float = 0.05      # dispersión mínima (log) que conservan las tasas
+    estimate_wind: bool = True      # inferir el viento efectivo con el centroide de VIIRS
+    wind_obs_sd_km: float = 0.3     # error del centroide de FRP de una pasada [km]
+    wind_min_sd: float = 0.03       # dispersión mínima que conserva el viento
+    wind_min_pixels: int = 5        # detecciones mínimas para confiar en un centroide
 
 
 class FireFilter:
@@ -51,7 +56,8 @@ class FireFilter:
         self.log_b_var = self.cfg.bias_prior_sd ** 2
         self.last_viirs_h: float | None = None
         self.n_assimilated = 0
-        self.viirs_surprise = np.inf          # |innovación log media| del último VIIRS
+        self.pending_modis: Observation | None = None   # MODIS a la espera de un VIIRS cercano
+        self.bias_updates = 0
 
     # ------------------------------------------------------------------ pronóstico
     def forecast(self, dt: float, hour: float) -> None:
@@ -62,10 +68,14 @@ class FireFilter:
         """FRP por píxel que vería el sensor en cada miembro, sin sesgo. (N, n_pix)."""
         return (obs.H @ self.x.reshape(self.n, -1).T).T
 
-    def _update_bias(self, obs: Observation, hx: np.ndarray) -> None:
-        """Kalman escalar sobre log(b) con la innovación media de píxeles fuertes."""
-        if self.last_viirs_h is None:
-            return
+    def _update_bias(self, obs: Observation, hx: np.ndarray, gap_h: float) -> None:
+        """Kalman escalar sobre log(b) con una pasada MODIS casi simultánea a un VIIRS.
+
+        hx es lo que MODIS debería ver según el estado, sin sesgo. Solo se llama
+        cuando un VIIRS a menos de bias_max_gap_h ancla ese estado; con pasadas
+        MODIS aisladas el sesgo queda congelado, porque ahí la diferencia entre
+        observación y pronóstico es sobre todo error del modelo.
+        """
         b = np.exp(self.log_b)
         strong = obs.detected & (b * hx.mean(axis=0) > 3.0 * obs.thr_mw)
         if strong.sum() < 3:
@@ -75,14 +85,51 @@ class FireFilter:
         log_pred = np.log(hx[:, strong] + e)                # (N, k)
         # el análisis vive en log: la referencia es la media geométrica del ensemble
         delta = np.log(obs.frp[strong] + e) - log_pred.mean(axis=0)
-        stale = self.cfg.bias_drift_per_h * (obs.time_h - self.last_viirs_h)
-        # el estado solo sirve de referencia en la medida en que el último VIIRS
-        # no lo sorprendió: esa innovación entra como error de la referencia
+        stale = self.cfg.bias_drift_per_h * gap_h
         r = (obs.sensor.sigma_log ** 2 / strong.sum()
-             + log_pred.mean(axis=1).var(ddof=1) + stale ** 2 + self.viirs_surprise ** 2)
+             + log_pred.mean(axis=1).var(ddof=1) + stale ** 2)
         gain = self.log_b_var / (self.log_b_var + r)
         self.log_b += gain * (np.median(delta) - self.log_b)
         self.log_b_var *= 1.0 - gain
+        self.bias_updates += 1
+
+    def _update_wind(self, obs: Observation, pred: np.ndarray) -> None:
+        """Infiere el viento efectivo con el centroide de FRP de una pasada VIIRS.
+
+        Cada miembro propagó el fuego desde la pasada anterior con su propio viento,
+        así que su centroide pronosticado quedó corrido en esa dirección. Comparar
+        esos centroides con el observado corrige (wind_x, wind_y) por regresión del
+        ensemble: dos observaciones escalares para dos parámetros globales.
+        """
+        cfg, det = self.cfg, obs.detected
+        if det.sum() < cfg.wind_min_pixels:
+            return
+        weight = pred * (obs.clear & (pred > obs.thr_mw))    # FRP visible, (N, n_pix)
+        total = weight.sum(axis=1)
+        if (total <= 0).any():
+            return
+        centroid = (weight @ obs.centers_km) / total[:, None]                 # (N, 2)
+        observed = (obs.frp[det] @ obs.centers_km[det]) / obs.frp[det].sum()  # (2,)
+        r = cfg.wind_obs_sd_km ** 2
+        for axis in (0, 1):
+            h = centroid[:, axis]
+            var = h.var(ddof=1)
+            if var < 1e-10:
+                continue
+            dh = h - h.mean()
+            alpha = 1.0 / (1.0 + np.sqrt(r / (var + r)))
+            for name in ("wind_x", "wind_y"):
+                p = np.asarray(getattr(self.params, name), dtype=float)
+                if p.ndim == 0:
+                    continue
+                dp = p - p.mean()
+                gain = (dp @ dh) / (self.n - 1) / (var + r)
+                shift = float(np.clip(gain * (observed[axis] - h.mean()), -0.1, 0.1))
+                new = p.mean() + shift + dp - alpha * gain * dh
+                sd = new.std(ddof=1)
+                if sd < cfg.wind_min_sd:
+                    new = new.mean() + (new - new.mean()) * cfg.wind_min_sd / max(sd, 1e-12)
+                setattr(self.params, name, new)
 
     def _update_params(self, obs: Observation, pred: np.ndarray) -> None:
         """Ajusta las tasas del modelo con el FRP total de la pasada (EnSRF escalar).
@@ -152,16 +199,17 @@ class FireFilter:
         is_modis = obs.sensor.family == "MODIS"
         hx = self._hx(obs)
         if is_modis and cfg.estimate_bias:
-            self._update_bias(obs, hx)
+            gap = np.inf if self.last_viirs_h is None else obs.time_h - self.last_viirs_h
+            if gap <= cfg.bias_max_gap_h:
+                self._update_bias(obs, hx, gap)       # un VIIRS acaba de anclar el estado
+            else:
+                self.pending_modis = obs              # quizá llegue un VIIRS enseguida
         b = float(np.exp(self.log_b)) if is_modis else 1.0
-        if not is_modis and obs.detected.any():
-            e = 0.1 * obs.thr_mw
-            d = obs.detected
-            self.viirs_surprise = float(abs(np.mean(
-                np.log(obs.frp[d] + e) - np.log(hx[:, d] + e).mean(axis=0))))
 
         if cfg.estimate_params and self.n_assimilated > 0:
             self._update_params(obs, b * hx)
+        if cfg.estimate_wind and not is_modis and self.n_assimilated > 0:
+            self._update_wind(obs, hx)
         self.n_assimilated += 1
 
         born = self._birth(obs, b * hx, b)
@@ -190,8 +238,15 @@ class FireFilter:
         self.f = np.clip(f, 0.0, 1.0).reshape(self.f.shape)
         if not is_modis:
             self.last_viirs_h = obs.time_h
+            pending, self.pending_modis = self.pending_modis, None
+            if pending is not None and obs.time_h - pending.time_h <= cfg.bias_max_gap_h:
+                # el VIIRS llegó justo después del MODIS: recién ahora hay referencia
+                self._update_bias(pending, self._hx(pending), obs.time_h - pending.time_h)
         return {"n_det": int(det.sum()), "n_nondet": int(non.sum()),
                 "born": born, "cells": cells, "bias": float(np.exp(self.log_b)),
+                "bias_updates": self.bias_updates,
+                "wind_x": float(np.mean(self.params.wind_x)),
+                "wind_y": float(np.mean(self.params.wind_y)),
                 # lo que el pronóstico esperaba ver en los píxeles detectados, y lo visto
                 "pred_sum": float(b * hx[:, det].mean(axis=0).sum()),
                 **{name: float(np.exp(np.mean(np.log(getattr(self.params, name)))))
@@ -258,7 +313,7 @@ def run_passes(flt: FireFilter, passes: dict[int, list[Observation]], times: np.
             naive = grid_naive(obs, (flt.ny, flt.nx))
             log.append({"time_h": obs.time_h, "platform": obs.platform,
                         "family": obs.sensor.family, **info})
-            if obs.sensor.family == "MODIS" and flt.cfg.estimate_bias:
+            if flt.cfg.estimate_bias:
                 bias_trace.append((obs.time_h, info["bias"], float(np.sqrt(flt.log_b_var))))
         totals[k] = flt.x.sum(axis=(1, 2))
         if k % store_every == 0:

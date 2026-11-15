@@ -105,6 +105,11 @@ def main() -> None:
     ap.add_argument("--nondet-level", type=float, default=1.0,
                     help="una no-detección significa FRP <= nivel x umbral de detección")
     ap.add_argument("--birth-fuel-weight", type=float, default=0.5)
+    ap.add_argument("--bias-max-gap-min", type=float, default=45.0,
+                    help="separación máxima MODIS–VIIRS para actualizar el sesgo de MODIS")
+    ap.add_argument("--estimate-wind", action="store_true",
+                    help="inferir el viento efectivo con el centroide de VIIRS; conviene "
+                    "solo si el rectángulo contiene un único incendio")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="salida_firms")
     args = ap.parse_args()
@@ -151,7 +156,9 @@ def main() -> None:
     # y como el modelo no está calibrado para este incendio, sus tasas se ajustan en línea
     cfg = FilterConfig(sigma_nondet=0.6, estimate_bias=has_viirs, estimate_params=True,
                        nondet_level=args.nondet_level,
-                       birth_fuel_weight=args.birth_fuel_weight)
+                       birth_fuel_weight=args.birth_fuel_weight,
+                       bias_max_gap_h=args.bias_max_gap_min / 60.0,
+                       estimate_wind=args.estimate_wind)
     flt = FireFilter(fuel, model.perturbed(args.members, rng, rel=0.3, wind_sd=0.3), rng, cfg)
     res = run_passes(flt, by_step, times, "FIRMS", store_every=6, holdout=held)
 
@@ -181,8 +188,18 @@ def main() -> None:
                       f"falsas alarmas {s['falsas_alarmas']})")
     if res.bias_trace:
         _, b, sd = res.bias_trace[-1]
-        summary["sesgo_modis_sobre_viirs"] = {"b": b, "desvio_log": sd}
-        print(f"Sesgo MODIS/VIIRS estimado: {b:.2f} (±{sd:.2f} en log)")
+        pairs = res.log[-1]["bias_updates"]
+        summary["sesgo_modis_sobre_viirs"] = {"b": b, "desvio_log": sd,
+                                              "pares_casi_simultaneos": pairs}
+        print(f"Sesgo MODIS/VIIRS estimado: {b:.2f} (±{sd:.2f} en log), con {pairs} pares "
+              f"MODIS–VIIRS a menos de {cfg.bias_max_gap_h * 60:.0f} min")
+    if args.estimate_wind:
+        wx, wy = res.log[-1]["wind_x"], res.log[-1]["wind_y"]
+        summary["viento_efectivo"] = {
+            "wind_x": wx, "wind_y": wy,
+            "rumbo_grados": float((90 - np.degrees(np.arctan2(wy, wx))) % 360)}
+        print(f"Viento efectivo estimado: ({wx:+.2f}, {wy:+.2f}) celdas, empuja hacia "
+              f"{summary['viento_efectivo']['rumbo_grados']:.0f}° (0 = norte, 90 = este)")
     for fam, s in skill.items():
         print(f"Pronóstico {fam}: error mediano ×{s['filtro_factor_mediano']:.2f} "
               f"(persistencia ×{s['persistencia_factor_mediano']:.2f}, {s['pasadas']} pasadas)")

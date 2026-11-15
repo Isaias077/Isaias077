@@ -18,7 +18,7 @@ y con su incertidumbre.
 | Modelo de fuego | `frp_enkf/model.py` | Cada celda tiene FRP y combustible. Una celda encendida tiende a una intensidad de equilibrio fijada por su combustible y la hora del día, con un techo. Una celda apagada solo se enciende por contagio de sus vecinas, con viento. |
 | Sensores | `frp_enkf/sensors.py` | Geometría real del píxel según el ángulo de barrido. MODIS pasa de 1 km en nadir a 4.8 × 2.0 km en el borde, con respuesta triangular. VIIRS pasa de 375 m a unos 0.8 km gracias a su agregación de muestras. El umbral de detección crece con el área del píxel. |
 | LETKF | `frp_enkf/letkf.py` | Filtro de Kalman por ensembles con transformación local y localización de Gaspari-Cohn. |
-| Fusión | `frp_enkf/assim.py` | Análisis en `log(FRP)`, no-detecciones como observaciones censuradas, encendido de fuego nuevo y estimación en línea del sesgo MODIS/VIIRS. |
+| Fusión | `frp_enkf/assim.py` | Análisis en `log(FRP)`, no-detecciones como observaciones censuradas, encendido de fuego nuevo, y estimación en línea del sesgo MODIS/VIIRS, del viento efectivo y de las tasas del modelo. |
 | Experimento | `frp_enkf/osse.py` | Incendio sintético con verdad conocida, pasadas simuladas de Terra, Aqua, S-NPP y NOAA-20, y métricas. |
 | Calibración | `frp_enkf/calibrate.py` | Saca de las detecciones de VIIRS el techo de intensidad por celda y el piso nocturno del ciclo diurno. |
 | Datos reales | `frp_enkf/firms.py` | Descarga de NASA FIRMS, lectura de los CSV, separación en pasadas y conversión de cada detección a su huella real. |
@@ -46,7 +46,7 @@ covarianza del ensemble lleva la corrección a las celdas donde ya había fuego.
 ```bash
 pip install -r requirements.txt
 python run_osse.py            # ~1 minuto; escribe figures/ y figures/metrics.json
-python -m pytest -q           # 31 tests
+python -m pytest -q           # 35 tests
 ```
 
 Opciones: `--seed`, `--members`, `--hours`, `--out`, `--no-figures`.
@@ -66,35 +66,54 @@ Escenario por defecto (`--seed 7`, 50 miembros):
 
 | Sensores | Método | RMSE a 375 m [MW] | RMSE a 1.5 km [MW] | Error medio del FRP total |
 |---|---|---|---|---|
-| MODIS + VIIRS | Filtro | **0.71** | **0.39** | 12.9 % |
+| MODIS + VIIRS | Filtro | **0.68** | **0.37** | 12.5 % |
 | MODIS + VIIRS | Línea de base | 1.70 | 1.31 | 27.6 % |
-| Solo VIIRS | Filtro | 0.94 | 0.60 | 20.1 % |
+| Solo VIIRS | Filtro | 0.87 | 0.54 | 19.9 % |
 | Solo VIIRS | Línea de base | 1.90 | 1.51 | 30.8 % |
 | Solo MODIS | Filtro | 0.84 | 0.46 | **9.8 %** |
 | Solo MODIS | Línea de base | 1.52 | 1.16 | 29.0 % |
 
 Lo mismo con otras tres semillas (filtro contra línea de base, MODIS + VIIRS):
 
-| Semilla | RMSE a 375 m | Error del FRP total | Sesgo MODIS estimado (real: 0.80) |
-|---|---|---|---|
-| 7 | 0.71 contra 1.70 | 12.9 % contra 27.6 % | 0.73 |
-| 1 | 0.70 contra 1.53 | 18.5 % contra 22.9 % | 0.70 |
-| 2 | 0.72 contra 1.71 | 14.2 % contra 25.2 % | 0.75 |
-| 3 | 0.72 contra 1.79 | 12.1 % contra 24.6 % | 0.82 |
+| Semilla | RMSE a 375 m | Error del FRP total | Sesgo MODIS (real: 0.80) | Viento (real: 0.30, 0.10) |
+|---|---|---|---|---|
+| 7 | 0.68 contra 1.70 | 12.5 % contra 27.6 % | 0.78 | 0.11, 0.09 |
+| 1 | 0.62 contra 1.53 | 16.6 % contra 22.9 % | 0.74 | 0.20, 0.21 |
+| 2 | 0.70 contra 1.71 | 15.7 % contra 25.2 % | 0.78 | 0.18, 0.11 |
+| 3 | 0.68 contra 1.79 | 12.6 % contra 24.6 % | 0.79 | 0.25, 0.24 |
+
+El filtro arranca con un viento supuesto de (0.10, 0.25).
 
 Qué muestran:
 
 - **El mapa a 375 m mejora siempre.** El error por celda es menos de la mitad
   que el de la línea de base, y con los dos sensores es menor que con cualquiera
   por separado, en las cuatro semillas.
-- **El FRP total mejora, con margen variable.** Va de 23 % a 18.5 % en la peor
-  semilla y de 28 % a 13 % en la mejor.
-- **El sesgo entre sensores se recupera solo a medias.** MODIS se simula con un
-  sesgo multiplicativo de 0.80. El filtro lo estima entre 0.70 y 0.82 y tiende a
-  quedar bajo; en la semilla 1 queda a casi dos desvíos de su propia barra de
-  error.
+- **El FRP total mejora, con margen variable.** Va de 23 % a 17 % en la peor
+  semilla y de 28 % a 12.5 % en la mejor.
+- **El sesgo entre sensores se recupera.** MODIS se simula con un sesgo
+  multiplicativo de 0.80. El filtro lo estima entre 0.74 y 0.79, con una
+  incertidumbre declarada de 4 a 5 %; la semilla 1 queda a dos desvíos.
+- **El viento se recupera a medias.** En cada semilla al menos una de las dos
+  componentes se acerca al valor real, pero en ninguna se recuperan las dos. Con la inferencia activa el error a 375 m baja entre
+  3 y 7 % respecto de dejar el viento fijo.
 - **La incertidumbre está razonablemente calibrada.** La dispersión del
   ensemble es entre 1.0 y 1.2 veces el error real.
+
+### Sesgo de MODIS: solo con pasadas casi simultáneas
+
+El sesgo `b` se actualiza únicamente cuando una pasada MODIS y una VIIRS caen a
+menos de 45 minutos (por ejemplo Aqua con S-NPP), en cualquier orden. Ahí el
+VIIRS ancla el estado y la diferencia con MODIS es sesgo. Con una pasada MODIS
+aislada la diferencia es sobre todo error del modelo, y el sesgo queda
+congelado. En el experimento hay 5 o 6 de esos pares en 72 horas.
+
+### Viento efectivo: del corrimiento del centroide
+
+Cada miembro del ensemble propaga el fuego con su propio viento, así que su
+centroide de FRP pronosticado queda corrido en esa dirección. Al llegar una
+pasada VIIRS, la regresión del ensemble entre esos centroides y el observado
+corrige las dos componentes del viento, que son parámetros globales.
 
 ![Error por configuración y sesgo estimado](figures/4_metricas.png)
 
@@ -138,6 +157,9 @@ Qué hace con cada detección:
   piso nocturno sale del cociente noche/día. `--no-calibration` lo apaga.
 - **Ajusta en línea** el contagio, el techo y el tiempo de residencia con el FRP
   total de cada pasada.
+- **Sesgo y viento.** `--bias-max-gap-min` cambia el umbral de 45 minutos.
+  `--estimate-wind` activa la inferencia de viento, que viene apagada porque
+  solo tiene sentido si el rectángulo contiene un único incendio.
 - **Valida con un satélite reservado.** Con `--holdout NOAA-21` esas pasadas no
   se asimilan: se comparan con lo que el filtro predecía y con la persistencia
   (la última pasada asimilada).
@@ -155,11 +177,15 @@ Validación reservando NOAA-21 (16 pasadas que el filtro nunca vio):
 
 | | Filtro | Persistencia |
 |---|---|---|
-| Error mediano del FRP total de la pasada | **×2.3** | ×3.7 |
-| Píxeles con fuego acertados | 409 | 364 |
-| Píxeles con fuego omitidos | 706 | 751 |
-| Falsas alarmas | 860 | 664 |
+| Error mediano del FRP total de la pasada | **×2.6** | ×3.7 |
+| Píxeles con fuego acertados | 405 | 364 |
+| Píxeles con fuego omitidos | 710 | 751 |
+| Falsas alarmas | 849 | 664 |
 | Índice de acierto (CSI) | 0.21 | 0.20 |
+
+El error del FRP total varió entre ×2.3 y ×2.6 en corridas con cambios mínimos,
+así que la ventaja sobre la persistencia es real pero su tamaño no está bien
+medido. Falta repetir la validación con varias semillas.
 
 Qué muestra:
 
@@ -175,8 +201,14 @@ Qué muestra:
   el filtro mantiene unos 300 MW donde los satélites ven menos de 200.
 - **La banda de incertidumbre es demasiado angosta** para los errores que se
   ven. No hay que leerla como un intervalo de confianza.
-- **El sesgo MODIS/VIIRS no queda determinado:** 0.95 con ±29 %, casi el
-  supuesto inicial.
+- **El sesgo MODIS/VIIRS no se pudo estimar.** En esta semana no hay ningún par
+  MODIS–VIIRS a menos de 45 minutos: el más cercano está a 75, y FIRMS no trae
+  detecciones de S-NPP. Con la regla de pasadas casi simultáneas el sesgo queda
+  en su valor inicial de 1.
+- **La inferencia de viento no es fiable aquí.** Dio direcciones opuestas según
+  se reservara o no NOAA-21 (hacia 137° y hacia 340°). El rectángulo contiene
+  varios focos, y el centroide global se mueve por encendidos y apagados, no
+  por viento. Los resultados de arriba son con el viento fijo.
 
 ## Límites
 
