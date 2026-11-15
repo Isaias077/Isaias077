@@ -69,3 +69,10 @@ svg .year.sel { fill: var(--ink); font-weight: 700; }
   .controls, .two { grid-template-columns: 1fr; }
   #map { height: 320px; }
 }
+.hint { margin: -4px 0 0; font-size: 13px; color: var(--ink2); }
+.empty p { margin: 0; color: var(--ink2); max-width: 70ch; }
+.area-title { font-size: 20px; margin: 4px 0 2px; }
+.progress { display: flex; flex-direction: column; gap: 10px; border-color: #86b6ef; background: #f3f8fe; }
+.prog { font-size: 14px; }
+.bar { height: 8px; background: #dfe9f6; border-radius: 4px; margin-top: 6px; overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s; }
