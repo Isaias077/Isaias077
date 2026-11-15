@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .assim import FilterConfig, FireFilter
+from .assim import FilterConfig, FireFilter, RunResult, run_passes
 from .model import FireParams, make_fuel_map, smooth_field, step
 from .sensors import MODIS, VIIRS, Observation, Sensor, grid_naive, observe
 
@@ -87,16 +87,6 @@ def simulate_truth(sc: Scenario) -> Truth:
     return Truth(times, xs, fuel0, passes)
 
 
-@dataclass
-class RunResult:
-    label: str
-    mean: np.ndarray             # (T+1, ny, nx) media del ensemble (o línea de base)
-    spread: np.ndarray | None    # (T+1, ny, nx) desvío del ensemble
-    total_members: np.ndarray | None   # (T+1, N) FRP total de cada miembro
-    bias_trace: list[tuple[float, float, float]]   # (hora, b estimado, desvío de log b)
-    log: list[dict]
-
-
 def run_filter(sc: Scenario, truth: Truth, families: tuple[str, ...], label: str,
                n_members: int = 50, cfg: FilterConfig | None = None,
                seed: int = 100) -> RunResult:
@@ -108,25 +98,9 @@ def run_filter(sc: Scenario, truth: Truth, families: tuple[str, ...], label: str
     fuel = np.clip(truth.fuel0 + sc.fuel_error * smooth_field(sc.shape, 4.0, rng, n_members),
                    0.2, 1.0)
     flt = FireFilter(fuel, sc.model.perturbed(n_members, rng), rng, cfg)
-
-    T = sc.n_steps
-    mean = np.zeros((T + 1,) + sc.shape)
-    spread = np.zeros_like(mean)
-    totals = np.zeros((T + 1, n_members))
-    bias_trace, log = [], []
-    for k in range(1, T + 1):
-        flt.forecast(sc.dt_h, truth.times[k - 1])
-        for obs in truth.passes.get(k, []):
-            if obs.sensor.family not in families:
-                continue
-            info = flt.assimilate(obs)
-            log.append({"time_h": obs.time_h, "platform": obs.platform, **info})
-            if obs.sensor.family == "MODIS" and cfg.estimate_bias:
-                bias_trace.append((obs.time_h, info["bias"], float(np.sqrt(flt.log_b_var))))
-        mean[k] = flt.x.mean(axis=0)
-        spread[k] = flt.x.std(axis=0, ddof=1)
-        totals[k] = flt.x.sum(axis=(1, 2))
-    return RunResult(label, mean, spread, totals, bias_trace, log)
+    passes = {k: [o for o in ps if o.sensor.family in families]
+              for k, ps in truth.passes.items()}
+    return run_passes(flt, passes, truth.times, label)
 
 
 def run_naive(sc: Scenario, truth: Truth, families: tuple[str, ...], label: str) -> RunResult:

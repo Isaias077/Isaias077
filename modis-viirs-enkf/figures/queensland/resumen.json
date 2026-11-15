@@ -1,0 +1,25 @@
+{
+  "bbox": [
+    144.35,
+    -19.75,
+    144.85,
+    -19.25
+  ],
+  "pasadas": 48,
+  "habilidad_pronostico": {
+    "MODIS": {
+      "pasadas": 15,
+      "filtro_factor_mediano": 2.765801723398719,
+      "persistencia_factor_mediano": 6.735898237931393
+    },
+    "VIIRS": {
+      "pasadas": 31,
+      "filtro_factor_mediano": 3.07816291512935,
+      "persistencia_factor_mediano": 3.431008529854491
+    }
+  },
+  "sesgo_modis_sobre_viirs": {
+    "b": 0.8920164495964111,
+    "desvio_log": 0.24848989632835042
+  }
+}

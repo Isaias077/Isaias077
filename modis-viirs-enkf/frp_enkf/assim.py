@@ -22,11 +22,16 @@ class FilterConfig:
     loc_km: float = 1.0         # semiancho base de localización (se suma media huella)
     infl: float = 1.03          # inflación multiplicativa
     sigma_nondet: float = 0.3   # error (log) de una no-detección
+    nondet_level: float = 1.0   # una no-detección despejada significa "FRP <= nivel * umbral"
+    extinct_mw: float = 0.0     # tras el análisis, una celda por debajo de esto está apagada
     birth_frac: float = 0.1     # un miembro "no explica" si predice < frac * obs
     estimate_bias: bool = True  # estimar en línea el sesgo MODIS/VIIRS
     bias_prior_sd: float = 0.3  # desvío a priori de log(b)
     bias_walk_sd: float = 0.02  # caminata aleatoria de log(b) por pasada
     bias_drift_per_h: float = 0.08  # desconfianza por hora desde el último VIIRS
+    estimate_params: bool = False   # ajustar en línea las tasas del modelo de fuego
+    param_obs_sd: float = 0.3       # error (log) del FRP total usado para ajustarlas
+    param_min_sd: float = 0.05      # dispersión mínima (log) que conservan las tasas
 
 
 class FireFilter:
@@ -45,6 +50,7 @@ class FireFilter:
         self.log_b = 0.0                      # log del sesgo MODIS respecto de VIIRS
         self.log_b_var = self.cfg.bias_prior_sd ** 2
         self.last_viirs_h: float | None = None
+        self.n_assimilated = 0
         self.viirs_surprise = np.inf          # |innovación log media| del último VIIRS
 
     # ------------------------------------------------------------------ pronóstico
@@ -77,6 +83,36 @@ class FireFilter:
         gain = self.log_b_var / (self.log_b_var + r)
         self.log_b += gain * (np.median(delta) - self.log_b)
         self.log_b_var *= 1.0 - gain
+
+    def _update_params(self, obs: Observation, pred: np.ndarray) -> None:
+        """Ajusta las tasas del modelo con el FRP total de la pasada (EnSRF escalar).
+
+        Los miembros con tasas más altas pronostican más FRP total; esa covarianza
+        permite corregir beta, beta_self y lam cuando el pronóstico se pasa o se
+        queda corto. Una sola observación escalar evita correlaciones espurias.
+        """
+        cfg, thr = self.cfg, obs.thr_mw
+        visible = obs.detected | (obs.clear & (pred > thr))       # (N, n_pix)
+        h = np.log((pred * visible).sum(axis=1) + thr)
+        y = np.log(obs.frp[obs.detected].sum() + thr)
+        var = h.var(ddof=1)
+        if var < 1e-8:
+            return
+        r = cfg.param_obs_sd ** 2
+        alpha = 1.0 / (1.0 + np.sqrt(r / (var + r)))
+        dh = h - h.mean()
+        for name in ("beta", "beta_self", "lam"):
+            p = np.log(np.asarray(getattr(self.params, name), dtype=float))
+            if p.ndim == 0:
+                continue
+            dp = p - p.mean()
+            gain = (dp @ dh) / (self.n - 1) / (var + r)
+            shift = float(np.clip(gain * (y - h.mean()), -0.3, 0.3))
+            new = p.mean() + shift + dp - alpha * gain * dh
+            sd = new.std(ddof=1)
+            if sd < cfg.param_min_sd:
+                new = new.mean() + (new - new.mean()) * cfg.param_min_sd / max(sd, 1e-12)
+            setattr(self.params, name, np.exp(new))
 
     def _birth(self, obs: Observation, pred: np.ndarray, b: float) -> int:
         """Enciende fuego en los miembros que no explican una detección."""
@@ -115,6 +151,10 @@ class FireFilter:
             self.viirs_surprise = float(abs(np.mean(
                 np.log(obs.frp[d] + e) - np.log(hx[:, d] + e).mean(axis=0))))
 
+        if cfg.estimate_params and self.n_assimilated > 0:
+            self._update_params(obs, b * hx)
+        self.n_assimilated += 1
+
         born = self._birth(obs, b * hx, b)
         pred = b * self._hx(obs)
 
@@ -122,10 +162,10 @@ class FireFilter:
         det = obs.detected
         # no-detección censurada: solo informa si algún miembro supera el umbral
         non = obs.clear & ~det & (pred.max(axis=0) > obs.thr_mw)
+        cap = cfg.nondet_level * obs.thr_mw
         yb = np.concatenate([np.log(pred[:, det] + e),
-                             np.log(np.maximum(pred[:, non], obs.thr_mw) + e)], axis=1)
-        yo = np.concatenate([np.log(obs.frp[det] + e),
-                             np.full(non.sum(), np.log(obs.thr_mw + e))])
+                             np.log(np.maximum(pred[:, non], cap) + e)], axis=1)
+        yo = np.concatenate([np.log(obs.frp[det] + e), np.full(non.sum(), np.log(cap + e))])
         r_det = obs.sensor.sigma_log ** 2 + (0.1 * obs.thr_mw / obs.frp[det]) ** 2
         if is_modis:
             r_det = r_det + self.log_b_var
@@ -137,9 +177,53 @@ class FireFilter:
         cells = letkf_update([z, f], yb, yo, r, self.cell_xy, obs_xy,
                              cfg.loc_km + 0.5 * max(obs.ds_km, obs.dt_km), cfg.infl)
         x = np.exp(z) - cfg.eps
-        self.x = np.where(x < X_MIN, 0.0, x).reshape(self.x.shape)
+        self.x = np.where(x < max(X_MIN, cfg.extinct_mw), 0.0, x).reshape(self.x.shape)
         self.f = np.clip(f, 0.0, 1.0).reshape(self.f.shape)
         if not is_modis:
             self.last_viirs_h = obs.time_h
         return {"n_det": int(det.sum()), "n_nondet": int(non.sum()),
-                "born": born, "cells": cells, "bias": float(np.exp(self.log_b))}
+                "born": born, "cells": cells, "bias": float(np.exp(self.log_b)),
+                # lo que el pronóstico esperaba ver en los píxeles detectados, y lo visto
+                "pred_sum": float(b * hx[:, det].mean(axis=0).sum()),
+                "beta": float(np.exp(np.mean(np.log(self.params.beta)))),
+                "beta_self": float(np.exp(np.mean(np.log(self.params.beta_self)))),
+                "lam": float(np.exp(np.mean(np.log(self.params.lam)))),
+                "obs_sum": float(obs.frp[det].sum())}
+
+
+@dataclass
+class RunResult:
+    label: str
+    mean: np.ndarray             # (T, ny, nx) media del ensemble (o línea de base)
+    spread: np.ndarray | None    # (T, ny, nx) desvío del ensemble
+    total_members: np.ndarray | None   # (T, N) FRP total de cada miembro
+    bias_trace: list[tuple[float, float, float]]   # (hora, b estimado, desvío de log b)
+    log: list[dict]
+    times: np.ndarray | None = None    # (T,) horas de cada campo guardado
+
+
+def run_passes(flt: FireFilter, passes: dict[int, list[Observation]], times: np.ndarray,
+               label: str, store_every: int = 1) -> RunResult:
+    """Avanza el filtro por `times` asimilando passes[k] al llegar al paso k.
+
+    Guarda media y dispersión cada `store_every` pasos (y el FRP total siempre).
+    """
+    T = len(times) - 1
+    keep = np.arange(0, T + 1, store_every)
+    mean = np.zeros((keep.size, flt.ny, flt.nx))
+    spread = np.zeros_like(mean)
+    totals = np.zeros((T + 1, flt.n))
+    bias_trace, log = [], []
+    for k in range(1, T + 1):
+        flt.forecast(float(times[k] - times[k - 1]), float(times[k - 1]))
+        for obs in passes.get(k, []):
+            info = flt.assimilate(obs)
+            log.append({"time_h": obs.time_h, "platform": obs.platform,
+                        "family": obs.sensor.family, **info})
+            if obs.sensor.family == "MODIS" and flt.cfg.estimate_bias:
+                bias_trace.append((obs.time_h, info["bias"], float(np.sqrt(flt.log_b_var))))
+        totals[k] = flt.x.sum(axis=(1, 2))
+        if k % store_every == 0:
+            mean[k // store_every] = flt.x.mean(axis=0)
+            spread[k // store_every] = flt.x.std(axis=0, ddof=1)
+    return RunResult(label, mean, spread, totals, bias_trace, log, times[keep])

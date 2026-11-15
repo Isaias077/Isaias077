@@ -20,6 +20,7 @@ y con su incertidumbre.
 | LETKF | `frp_enkf/letkf.py` | Filtro de Kalman por ensembles con transformación local y localización de Gaspari-Cohn. |
 | Fusión | `frp_enkf/assim.py` | Análisis en `log(FRP)`, no-detecciones como observaciones censuradas, encendido de fuego nuevo y estimación en línea del sesgo MODIS/VIIRS. |
 | Experimento | `frp_enkf/osse.py` | Incendio sintético con verdad conocida, pasadas simuladas de Terra, Aqua, S-NPP y NOAA-20, y métricas. |
+| Datos reales | `frp_enkf/firms.py` | Descarga de NASA FIRMS, lectura de los CSV, separación en pasadas y conversión de cada detección a su huella real. |
 
 Tres decisiones separan esto de un EnKF de libro:
 
@@ -44,7 +45,7 @@ covarianza del ensemble lleva la corrección a las celdas donde ya había fuego.
 ```bash
 pip install -r requirements.txt
 python run_osse.py            # ~1 minuto; escribe figures/ y figures/metrics.json
-python -m pytest -q           # 17 tests
+python -m pytest -q           # 25 tests
 ```
 
 Opciones: `--seed`, `--members`, `--hours`, `--out`, `--no-figures`.
@@ -64,43 +65,101 @@ Escenario por defecto (`--seed 7`, 50 miembros):
 
 | Sensores | Método | RMSE a 375 m [MW] | RMSE a 1.5 km [MW] | Error medio del FRP total |
 |---|---|---|---|---|
-| MODIS + VIIRS | Filtro | **1.18** | **0.56** | **10.5 %** |
+| MODIS + VIIRS | Filtro | **1.18** | **0.57** | **11.3 %** |
 | MODIS + VIIRS | Línea de base | 2.26 | 1.49 | 33.0 % |
-| Solo VIIRS | Filtro | 1.40 | 0.71 | 12.7 % |
+| Solo VIIRS | Filtro | 1.40 | 0.72 | 12.1 % |
 | Solo VIIRS | Línea de base | 2.97 | 2.04 | 48.4 % |
-| Solo MODIS | Filtro | 1.45 | 0.75 | 16.6 % |
+| Solo MODIS | Filtro | 1.45 | 0.75 | 16.9 % |
 | Solo MODIS | Línea de base | 2.23 | 1.46 | 41.5 % |
 
 Lo mismo con otras tres semillas (filtro contra línea de base, MODIS + VIIRS):
 
 | Semilla | RMSE a 375 m | Error del FRP total | Sesgo MODIS estimado (real: 0.80) |
 |---|---|---|---|
-| 7 | 1.18 contra 2.26 | 10.5 % contra 33.0 % | 0.78 |
-| 1 | 1.16 contra 2.01 | 9.9 % contra 40.7 % | 0.79 |
-| 2 | 1.34 contra 2.89 | 10.2 % contra 28.6 % | 0.79 |
-| 3 | 1.35 contra 2.79 | 8.6 % contra 29.4 % | 0.82 |
+| 7 | 1.18 contra 2.26 | 11.3 % contra 33.0 % | 0.80 |
+| 1 | 1.15 contra 2.01 | 9.8 % contra 40.7 % | 0.80 |
+| 2 | 1.34 contra 2.89 | 11.4 % contra 28.6 % | 0.79 |
+| 3 | 1.36 contra 2.79 | 9.8 % contra 29.4 % | 0.82 |
 
 Qué muestran:
 
 - **Fusionar ayuda.** Con los dos sensores el error es menor que con cualquiera
   de los dos por separado, en las cuatro semillas.
 - **El sesgo entre sensores se recupera.** MODIS se simula con un sesgo
-  multiplicativo de 0.80. El filtro lo estima entre 0.78 y 0.82, con una
-  incertidumbre declarada de 6 a 9 %. Tarda entre uno y dos días en converger.
+  multiplicativo de 0.80. El filtro lo estima entre 0.79 y 0.82, con una
+  incertidumbre declarada de 6 a 10 %. Tarda entre uno y dos días en converger.
 - **La incertidumbre está bien calibrada.** La dispersión del ensemble es entre
   1.0 y 1.15 veces el error real.
 
 ![Error por configuración y sesgo estimado](figures/4_metricas.png)
+
+## Datos reales de NASA FIRMS
+
+`run_firms.py` baja las detecciones de MODIS y VIIRS de un rectángulo, las
+separa en pasadas y corre el filtro. Hay tres formas de darle datos:
+
+```bash
+# últimos 7 días, sin clave (archivos globales de FIRMS)
+python run_firms.py --bbox 144.35,-19.75,144.85,-19.25 --recent 7d
+
+# cualquier fecha, con la MAP_KEY gratuita de FIRMS
+export FIRMS_MAP_KEY=...      # https://firms.modaps.eosdis.nasa.gov/api/map_key/
+python run_firms.py --bbox 144.35,-19.75,144.85,-19.25 --start 2026-11-08 --days 7
+
+# sin red, con los CSV de muestra incluidos
+python run_firms.py --bbox 144.35,-19.75,144.85,-19.25 --csv-dir data/queensland_2026-11
+```
+
+El rectángulo es `oeste,sur,este,norte` en grados. Escribe en `salida_firms/`
+la serie de FRP total (`frp_armonizado.csv`), los campos horarios a 375 m
+(`frp_armonizado.npz`), un resumen (`resumen.json`) y una figura. Las descargas
+se guardan en `.firms_cache/`. Una corrida de 7 días sobre 50 × 55 km tarda
+unos 5 minutos.
+
+Qué hace con cada detección:
+
+- **Huella real.** Usa las columnas `scan` y `track` de FIRMS como tamaño del
+  píxel y lo orienta según la órbita del satélite.
+- **Hora solar.** Convierte la hora UTC a hora solar local para el ciclo diurno.
+- **No-detecciones inferidas.** FIRMS solo lista detecciones. Para cada pasada
+  con al menos una detección se asume que el resto del rectángulo estaba
+  despejado y sin fuego detectable. No hay máscara de nubes, así que estas
+  observaciones entran con el doble de error. `--no-non-detections` las apaga.
+
+### Prueba con un incendio real
+
+Queensland, Australia, del 8 al 15 de noviembre de 2026: 48 pasadas (16 de
+MODIS y 32 de VIIRS de NOAA-20 y NOAA-21) con 2555 detecciones. Los CSV están
+en `data/queensland_2026-11/`.
+
+![Incendio de Queensland](figures/queensland/frp_armonizado.png)
+
+El resultado es mixto, y no alcanza para llamarlo armonizado:
+
+- **El flujo completo funciona** con datos reales, de la descarga a los mapas.
+- **El pronóstico supera a la persistencia, sobre todo en MODIS.** Al llegar
+  cada pasada se compara lo que el filtro esperaba ver en los píxeles detectados
+  con lo observado. El error mediano es un factor 2.8 en MODIS (persistencia:
+  6.7) y 3.1 en VIIRS (persistencia: 3.4).
+- **Entre pasadas el modelo sobrestima.** El FRP total del filtro sube a varios
+  miles de MW durante el día, cuando ninguna pasada sumó más de unos 2100 MW.
+  El modelo de fuego está calibrado para el incendio sintético y hace crecer
+  este más de lo que crece. El ajuste en línea de sus tasas lo reduce pero no
+  lo resuelve.
+- **El sesgo MODIS/VIIRS no queda determinado:** 0.89 con ±25 %, apenas más
+  informado que el supuesto inicial.
 
 ## Límites
 
 - **Es un experimento gemelo.** La verdad y el filtro usan la misma familia de
   modelo, con parámetros distintos. Con incendios reales el error de modelo es
   mayor y la ventaja sobre la línea de base será menor.
-- **No se probó con datos reales.** Falta un lector de FIRMS o de los productos
-  MOD14 y VNP14IMG. FIRMS solo lista detecciones, así que para las
-  no-detecciones hace falta la cobertura del barrido y la máscara de nubes de
-  los productos de nivel 2.
+- **Con datos reales el modelo de fuego es el punto débil.** Hace falta
+  calibrarlo con incendios reales, o reemplazarlo por uno con meteorología y
+  combustible, antes de usar el campo entre pasadas.
+- **Las no-detecciones reales son una aproximación.** Para hacerlo bien hacen
+  falta la cobertura del barrido y la máscara de nubes de los productos de
+  nivel 2 (MOD14 y VNP14IMG).
 - **VIIRS está simplificado.** En el producto real, el FRP de 375 m se calcula
   con la banda M13 de 750 m y se comparte entre detecciones vecinas. Aquí cada
   píxel I mide su propio FRP.

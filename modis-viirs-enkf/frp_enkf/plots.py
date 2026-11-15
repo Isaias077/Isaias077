@@ -153,3 +153,44 @@ def fig_scores(scores: dict[str, dict], res: RunResult, true_bias: float, path: 
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def fig_real(dom, passes, res: RunResult, path: str) -> None:
+    """Datos reales: FRP total armonizado y mapa de energía radiada acumulada."""
+    t = res.times
+    step_h = float(np.median(np.diff(t)))
+    lo, hi = np.percentile(res.total_members, [5, 95], axis=1)
+    t_all = np.linspace(t[0], t[-1], res.total_members.shape[0])
+    fig, (a, b) = plt.subplots(1, 2, figsize=(14, 4.6), gridspec_kw={"width_ratios": [1.7, 1]},
+                               layout="constrained")
+    a.fill_between(t_all, lo, hi, color=C_FILTER, alpha=0.25, lw=0,
+                   label="Filtro: 5–95 % del ensemble")
+    a.plot(t_all, res.total_members.mean(axis=1), color=C_FILTER, lw=2,
+           label="Filtro: FRP armonizado")
+    for fam, color, marker in (("MODIS", C_MODIS, "o"), ("VIIRS", C_VIIRS, "s")):
+        pts = [(o.time_h, np.nansum(o.frp)) for o in passes if o.sensor.family == fam]
+        if pts:
+            a.scatter(*zip(*pts), s=46, color=color, marker=marker, edgecolor=SURFACE,
+                      linewidth=1.5, zorder=3, label=f"Suma de detecciones {fam}")
+    ticks = np.arange(np.ceil(t[0] / 24) * 24, t[-1] + 0.1, 24)
+    a.set_xticks(ticks)
+    a.set_xticklabels([str(dom.utc(x + 12.0).astype("datetime64[D]"))[5:] for x in ticks])
+    a.set_xlim(t[0], t[-1])
+    a.set_ylim(bottom=0)
+    a.set_xlabel("fecha (marcas a medianoche, hora solar local)")
+    a.set_ylabel("FRP total en el dominio [MW]")
+    a.set_title("FRP armonizado contra las sumas crudas de cada pasada")
+    a.legend(loc="upper right")
+
+    fre = res.mean.sum(axis=0) * step_h / 1000.0
+    ny, nx = fre.shape
+    im = b.imshow(fre, origin="lower", cmap=FIRE, vmin=0, vmax=float(np.percentile(fre, 99.5)),
+                  extent=[dom.west, dom.east, dom.south, dom.north], aspect="auto",
+                  interpolation="nearest")
+    b.grid(False)
+    b.set_xlabel("longitud")
+    b.set_ylabel("latitud")
+    b.set_title("Energía radiada acumulada (375 m)")
+    fig.colorbar(im, ax=b, label="GW h por celda")
+    fig.savefig(path, dpi=160)
+    plt.close(fig)

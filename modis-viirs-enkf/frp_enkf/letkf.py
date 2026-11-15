@@ -23,7 +23,8 @@ def letkf_update(fields: list[np.ndarray], yb: np.ndarray, yo: np.ndarray,
     """Actualiza en el lugar los campos del ensemble.
 
     fields  : lista de arreglos (N, n_celdas); a todos se les aplica la misma
-              transformación local (así el combustible sigue al fuego).
+              transformación local (así el combustible sigue al fuego). Solo se
+              analizan las celdas donde el primer campo tiene dispersión.
     yb      : (N, m) observaciones predichas por cada miembro.
     yo      : (m,) observaciones;  r_var: (m,) varianza del error de observación.
     cell_xy : (n_celdas, 2);  obs_xy: (m, 2);  obs_c: semiancho de localización.
@@ -46,6 +47,8 @@ def letkf_update(fields: list[np.ndarray], yb: np.ndarray, yo: np.ndarray,
     reach = 2.0 * obs_c.max()
     lo, hi = obs_xy.min(axis=0) - reach, obs_xy.max(axis=0) + reach
     cand = np.flatnonzero(np.all((cell_xy >= lo) & (cell_xy <= hi), axis=1))
+    # donde ningún miembro difiere en el primer campo no hay nada que corregir
+    cand = cand[fields[0][:, cand].std(axis=0) > 1e-9]
     means = [fld.mean(axis=0) for fld in fields]
     eye = np.eye(n)
     done = 0

@@ -79,16 +79,16 @@ class Observation:
         return self.ds_km * self.dt_km
 
 
-def build_footprints(sensor: Sensor, theta_deg: float, heading_deg: float,
-                     shape: tuple[int, int], offset: tuple[float, float] = (0.0, 0.0),
-                     nsub: int = 4) -> tuple[sparse.csr_matrix, np.ndarray, float, float]:
-    """Construye H para una pasada.
+def lattice_footprints(ds: float, dt: float, heading_deg: float, shape: tuple[int, int],
+                       triangular: bool, offset: tuple[float, float] = (0.0, 0.0),
+                       nsub: int = 4) -> tuple[sparse.csr_matrix, np.ndarray]:
+    """H de una malla regular de píxeles de ds x dt km que cubre toda la grilla.
 
-    Devuelve (H, centros, ds, dt). H[p, c] es la fracción de la energía de la celda
-    c que cae en el píxel p; para cada celda las fracciones suman 1.
+    El eje de barrido forma heading_deg con el eje x. Devuelve (H, centros). H[p, c]
+    es la fracción de la energía de la celda c que cae en el píxel p; para cada
+    celda las fracciones suman 1.
     """
     ny, nx = shape
-    ds, dt = sensor.pixel_size(theta_deg)
     phi = np.deg2rad(heading_deg)
     cs, sn = np.cos(phi), np.sin(phi)
 
@@ -101,7 +101,7 @@ def build_footprints(sensor: Sensor, theta_deg: float, heading_deg: float,
     v = (-x * sn + y * cs) / dt + offset[1]
     iv = np.floor(v).astype(np.int64)
     w0 = np.full(u.shape, 1.0 / nsub ** 2)
-    if sensor.triangular_psf:
+    if triangular:
         iu0 = np.floor(u - 0.5).astype(np.int64)
         fr = u - 0.5 - iu0
         iu = np.concatenate([iu0, iu0 + 1])
@@ -113,18 +113,64 @@ def build_footprints(sensor: Sensor, theta_deg: float, heading_deg: float,
 
     iu -= iu.min()
     iv -= iv.min()
-    nu = iu.max() + 1
-    key = iv * nu + iu
+    key = iv * (iu.max() + 1) + iu
     uniq, pix = np.unique(key, return_inverse=True)
     H = sparse.coo_matrix((w, (pix, cell)), shape=(uniq.size, ny * nx)).tocsr()
     H.sum_duplicates()
 
-    # centro geométrico de cada píxel (centroide ponderado de sus celdas)
+    # centro de cada píxel: centroide ponderado de sus celdas
     cx = (np.arange(ny * nx) % nx + 0.5) * CELL_KM
     cy = (np.arange(ny * nx) // nx + 0.5) * CELL_KM
     tot = np.asarray(H.sum(axis=1)).ravel()
-    centers = np.column_stack([H @ cx / tot, H @ cy / tot])
+    return H, np.column_stack([H @ cx / tot, H @ cy / tot])
+
+
+def build_footprints(sensor: Sensor, theta_deg: float, heading_deg: float,
+                     shape: tuple[int, int], offset: tuple[float, float] = (0.0, 0.0),
+                     nsub: int = 4) -> tuple[sparse.csr_matrix, np.ndarray, float, float]:
+    """H de una pasada simulada con ángulo de barrido theta. Devuelve (H, centros, ds, dt)."""
+    ds, dt = sensor.pixel_size(theta_deg)
+    H, centers = lattice_footprints(ds, dt, heading_deg, shape, sensor.triangular_psf,
+                                    offset, nsub)
     return H, centers, ds, dt
+
+
+def pixel_footprints(cx: np.ndarray, cy: np.ndarray, ds: np.ndarray, dt: np.ndarray,
+                     heading_deg: float, shape: tuple[int, int], triangular: bool,
+                     nsub: int = 4) -> sparse.csr_matrix:
+    """H de píxeles sueltos con centro (cx, cy) km y tamaño ds x dt km cada uno.
+
+    Es lo que hace falta para datos reales, donde cada detección trae su propia
+    posición y su propio tamaño de píxel.
+    """
+    ny, nx = shape
+    phi = np.deg2rad(heading_deg)
+    cs, sn = np.cos(phi), np.sin(phi)
+    sub = (np.arange(nsub) + 0.5) / nsub
+    rows, cols, vals = [], [], []
+    for p, (x0, y0, a, b) in enumerate(zip(cx, cy, ds, dt)):
+        reach = np.hypot(a if triangular else 0.5 * a, 0.5 * b)
+        ix0, ix1 = int((x0 - reach) // CELL_KM), int((x0 + reach) // CELL_KM) + 1
+        iy0, iy1 = int((y0 - reach) // CELL_KM), int((y0 + reach) // CELL_KM) + 1
+        ix0, ix1, iy0, iy1 = max(ix0, 0), min(ix1, nx), max(iy0, 0), min(iy1, ny)
+        if ix0 >= ix1 or iy0 >= iy1:
+            continue
+        yy, xx, sy, sx = np.meshgrid(np.arange(iy0, iy1), np.arange(ix0, ix1), sub, sub,
+                                     indexing="ij")
+        dx = (xx + sx) * CELL_KM - x0
+        dy = (yy + sy) * CELL_KM - y0
+        u = (dx * cs + dy * sn) / a
+        v = (-dx * sn + dy * cs) / b
+        wu = np.clip(1.0 - np.abs(u), 0.0, None) if triangular else (np.abs(u) < 0.5)
+        w = (wu * (np.abs(v) < 0.5)).mean(axis=(2, 3))
+        keep = w > 0
+        rows.append(np.full(keep.sum(), p))
+        cols.append((yy[..., 0, 0] * nx + xx[..., 0, 0])[keep])
+        vals.append(w[keep])
+    if not rows:
+        return sparse.csr_matrix((len(cx), ny * nx))
+    return sparse.coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                             shape=(len(cx), ny * nx)).tocsr()
 
 
 def observe(sensor: Sensor, platform: str, time_h: float, theta_deg: float,
