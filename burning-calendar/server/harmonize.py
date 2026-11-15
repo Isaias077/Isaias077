@@ -23,6 +23,7 @@ import numpy as np
 AQUA_START = (2002 - 2000) * 12 + 6      # julio de 2002, en meses desde enero de 2000
 VIIRS_START = (2012 - 2000) * 12 + 1     # febrero de 2012: primer mes completo de S-NPP
 MIN_OVERLAP_MONTHS = 18
+MIN_OVERLAP_HOTSPOTS = 1000   # con menos, el ajuste local es ruido: se usa el del país
 Z90 = 1.645
 
 
@@ -81,30 +82,49 @@ def cross_validate(month: np.ndarray, modis: np.ndarray, viirs: np.ndarray) -> d
     }
 
 
+def _masks(month, viirs_end, use_viirs, have_modis):
+    if use_viirs is None:
+        use_viirs = (month >= VIIRS_START) & (month <= viirs_end)
+    if have_modis is None:
+        have_modis = np.ones(month.size, dtype=bool)
+    return use_viirs, have_modis
+
+
 def apply(month: np.ndarray, terra: np.ndarray, aqua: np.ndarray, viirs: np.ndarray,
-          viirs_end: int, a: float, b: float, sigma: float) -> dict:
-    """Serie armonizada con un ajuste ya hecho: VIIRS hasta viirs_end, MODIS convertido fuera."""
+          viirs_end: int | None, a: float, b: float, sigma: float,
+          use_viirs: np.ndarray | None = None, have_modis: np.ndarray | None = None) -> dict:
+    """Serie armonizada con un ajuste ya hecho.
+
+    Usa VIIRS donde use_viirs (por defecto, de febrero de 2012 a viirs_end) y MODIS
+    convertido en el resto. Los meses sin ninguno de los dos quedan en NaN.
+    """
+    use_viirs, have_modis = _masks(month, viirs_end, use_viirs, have_modis)
     modis = terra_to_modis(month, terra, aqua)
-    from_viirs = (month >= VIIRS_START) & (month <= viirs_end)
     est = predict(modis, a, b)
     lo = np.maximum(np.expm1(np.log1p(est) - Z90 * sigma), 0.0)
     hi = np.expm1(np.log1p(est) + Z90 * sigma)
-    return {"modis": modis, "harmonized": np.where(from_viirs, viirs, est),
-            "low": np.where(from_viirs, viirs, lo), "high": np.where(from_viirs, viirs, hi),
-            "from_viirs": from_viirs}
+    gap = ~use_viirs & ~have_modis
+    pick = lambda v, alt: np.where(gap, np.nan, np.where(use_viirs, v, alt))
+    return {"modis": modis, "harmonized": pick(viirs, est), "low": pick(viirs, lo),
+            "high": pick(viirs, hi), "from_viirs": use_viirs}
 
 
 def harmonize(month: np.ndarray, terra: np.ndarray, aqua: np.ndarray, viirs: np.ndarray,
-              viirs_end: int, fallback: tuple[float, float, float] | None = None) -> dict:
+              viirs_end: int | None = None, fallback: tuple[float, float, float] | None = None,
+              use_viirs: np.ndarray | None = None, have_modis: np.ndarray | None = None) -> dict:
     """Serie mensual armonizada.
 
-    month: meses desde enero de 2000, consecutivos. viirs_end: último mes con VIIRS.
+    month: meses desde enero de 2000, consecutivos. viirs_end: último mes con VIIRS, o
+    bien use_viirs y have_modis: qué meses tiene cada sensor (mientras se descargan).
     fallback: ajuste (a, b, sigma) de un área mayor, para áreas con pocos datos.
+    Sin ajuste posible, los meses que solo tienen MODIS quedan en NaN.
     """
+    use_viirs, have_modis = _masks(month, viirs_end, use_viirs, have_modis)
     modis = terra_to_modis(month, terra, aqua)
-    overlap = (month >= VIIRS_START) & (month <= viirs_end)
+    overlap = use_viirs & have_modis
     active = overlap & ((modis > 0) | (viirs > 0))
-    local = int(active.sum()) >= MIN_OVERLAP_MONTHS
+    local = (int(active.sum()) >= MIN_OVERLAP_MONTHS
+             and float(viirs[overlap].sum()) >= MIN_OVERLAP_HOTSPOTS)
     if local:
         a, b, sigma = fit_loglog(modis[overlap], viirs[overlap])
         cv = cross_validate(month[overlap], modis[overlap], viirs[overlap])
@@ -112,9 +132,9 @@ def harmonize(month: np.ndarray, terra: np.ndarray, aqua: np.ndarray, viirs: np.
     elif fallback is not None:
         (a, b, sigma), cv, origin = fallback, None, "pais"
     else:
-        a, b, sigma, cv, origin = 0.0, 1.0, 0.0, None, "ninguno"
+        a, b, sigma, cv, origin = np.nan, np.nan, 0.0, None, "ninguno"
 
-    return {**apply(month, terra, aqua, viirs, viirs_end, a, b, sigma),
+    return {**apply(month, terra, aqua, viirs, viirs_end, a, b, sigma, use_viirs, have_modis),
             "fit": {"a": a, "b": b, "sigma": sigma, "origen": origin,
                     "meses_solapados": int(active.sum())},
             "cv": cv}
@@ -128,7 +148,8 @@ def calendar_stats(month: np.ndarray, value: np.ndarray, valid: np.ndarray | Non
     pero conviene reemplazarla por una comparación de los mismos días.
     """
     moy = month % 12
-    valid = np.ones(value.size, dtype=bool) if valid is None else valid
+    valid = np.ones(value.size, dtype=bool) if valid is None else valid.copy()
+    valid &= np.isfinite(value)
     median = np.zeros(12)
     p25, p75 = np.zeros(12), np.zeros(12)
     anomaly = np.zeros(value.size)       # cociente frente a la mediana de los otros años
@@ -153,7 +174,7 @@ def same_days_comparison(month: np.ndarray, value: np.ndarray, target: int) -> d
 
     `value` debe venir contado solo hasta el mismo día del mes en todos los años.
     """
-    sel = (month % 12 == target % 12) & (month != target)
+    sel = (month % 12 == target % 12) & (month != target) & np.isfinite(value)
     ref = value[sel]
     cur = float(value[month == target][0])
     med = float(np.median(ref)) if ref.size else cur
