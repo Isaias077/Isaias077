@@ -4,26 +4,28 @@ Estado por celda:
     x : potencia radiativa del fuego, FRP [MW]
     f : fracción de combustible restante [0, 1]
 
-Dinámica (Euler, paso dt en horas):
-    s  = K * x                                  (calor que llega de los vecinos)
-    x' = d(t) * f * (beta_self * x + beta * s * s / (s + x_ign)) - lam * x
-    f' = -x / e0
+Una celda está encendida si x > x_off. Dinámica (paso dt en horas):
 
-K es un núcleo 3x3 desplazado por el viento, d(t) el ciclo diurno y e0 la
-energía radiativa total que libera una celda con combustible completo [MW h].
-El término beta_self hace que una celda encendida siga ardiendo mientras le quede
-combustible (de noche d(t) baja y el fuego se debilita sin apagarse). El factor
-s / (s + x_ign) es un umbral suave de ignición: el calor débil no enciende celdas
-nuevas, así que el fuego avanza como un frente y no se difunde.
-Como FRP es proporcional a la tasa de consumo de biomasa, el combustible baja
-en proporción a x: eso produce un frente que avanza y deja cicatriz quemada.
+    encendida:  x' = (x_eq - x) / tau_x,   x_eq = x_peak * d(t) * f
+    apagada:    x' = beta * d(t) * f * s * s / (s + x_ign) - lam * x,   s = K * x
+    siempre:    f' = -x / (x_peak * tau_res)
+
+La intensidad de una celda encendida no crece sin límite: tiende a un equilibrio
+fijado por su combustible y la hora del día, con x_peak como techo. Al consumir
+combustible (en unas tau_res horas a pleno) el equilibrio baja hasta que la celda
+se apaga. Una celda apagada solo se enciende por contagio: acumula el calor s que
+le llega de sus vecinas (K es un núcleo 3x3 desplazado por el viento) hasta
+superar x_off, así que beta fija la velocidad del frente. d(t) es el ciclo diurno.
+
+Como el FRP es proporcional a la tasa de consumo de biomasa, la energía irradiada
+sale siempre del combustible: x_peak * tau_res es la energía total de una celda.
 
 Todas las funciones aceptan arreglos con dimensiones delanteras de ensemble:
 x y f con forma (..., ny, nx) y parámetros con forma (...,).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -35,32 +37,38 @@ _OFFSETS = [(oy, ox) for oy in (-1, 0, 1) for ox in (-1, 0, 1)]
 
 @dataclass
 class FireParams:
-    """Parámetros del modelo. Cada campo es escalar o un arreglo (N,)."""
+    """Parámetros del modelo. beta, x_peak, tau_res y viento: escalar o arreglo (N,)."""
 
-    beta: np.ndarray | float = 2.5   # tasa de propagación a vecinos [1/h]
-    beta_self: np.ndarray | float = 1.0  # tasa de intensificación en la celda [1/h]
-    lam: np.ndarray | float = 0.5    # tasa de decaimiento [1/h]
-    e0: np.ndarray | float = 60.0    # energía por celda con f=1 [MW h]
-    wind_x: np.ndarray | float = 0.0  # desplazamiento del núcleo [celdas]
+    beta: np.ndarray | float = 0.3     # contagio a celdas vecinas [1/h]
+    x_peak: np.ndarray | float = 40.0  # FRP de una celda a pleno (f = 1, mediodía) [MW]
+    tau_res: np.ndarray | float = 4.0  # horas que tarda una celda a pleno en consumirse
+    wind_x: np.ndarray | float = 0.0   # desplazamiento del núcleo [celdas]
     wind_y: np.ndarray | float = 0.0
-    x_ign: float = 2.0               # umbral suave de ignición [MW]
-    tau_burn: float = 0.5            # tiempo mínimo de agotamiento del combustible [h]
-    sigma_proc: float = 0.25         # ruido de proceso multiplicativo [1/sqrt(h)]
-    d_min: float = 0.4               # piso nocturno del ciclo diurno
-    peak_hour: float = 14.0          # hora local del máximo diurno
-    sigma_hour: float = 3.5          # ancho del máximo diurno [h]
+    tau_x: float = 0.5                 # tiempo de respuesta de la intensidad [h]
+    lam: float = 0.2                   # enfriamiento de una celda apagada [1/h]
+    x_ign: float = 2.0                 # umbral suave del calor recibido [MW]
+    x_off: float = 1.0                 # por debajo de esto la celda está apagada [MW]
+    sigma_proc: float = 0.25           # ruido de proceso multiplicativo [1/sqrt(h)]
+    d_min: float = 0.4                 # piso nocturno del ciclo diurno
+    peak_hour: float = 14.0            # hora local del máximo diurno
+    sigma_hour: float = 3.5            # ancho del máximo diurno [h]
+
+    RATES = ("beta", "x_peak", "tau_res")   # los que se perturban y se pueden estimar
+
+    @property
+    def e0(self) -> np.ndarray | float:
+        """Energía radiativa total de una celda con combustible completo [MW h]."""
+        return np.asarray(self.x_peak) * np.asarray(self.tau_res)
 
     def perturbed(self, n: int, rng: np.random.Generator, rel: float = 0.15,
                   wind_sd: float = 0.15) -> "FireParams":
         """N juegos de parámetros alrededor de los centrales (para el ensemble)."""
-        ln = lambda v, s: float(v) * np.exp(s * rng.standard_normal(n))
-        return FireParams(
-            beta=ln(self.beta, rel), beta_self=ln(self.beta_self, rel), lam=ln(self.lam, rel), e0=ln(self.e0, rel),
-            wind_x=float(self.wind_x) + wind_sd * rng.standard_normal(n),
-            wind_y=float(self.wind_y) + wind_sd * rng.standard_normal(n),
-            x_ign=self.x_ign, tau_burn=self.tau_burn, sigma_proc=self.sigma_proc, d_min=self.d_min,
-            peak_hour=self.peak_hour, sigma_hour=self.sigma_hour,
-        )
+        out = replace(self)
+        for name in self.RATES:
+            setattr(out, name, float(getattr(self, name)) * np.exp(rel * rng.standard_normal(n)))
+        out.wind_x = float(self.wind_x) + wind_sd * rng.standard_normal(n)
+        out.wind_y = float(self.wind_y) + wind_sd * rng.standard_normal(n)
+        return out
 
 
 def diurnal(hour: float, p: FireParams) -> float:
@@ -95,15 +103,17 @@ def step(x: np.ndarray, f: np.ndarray, p: FireParams, dt: float, hour: float,
     """Avanza (x, f) un paso dt [h]. Con rng aplica ruido de proceso lognormal."""
     col = lambda v: np.asarray(v, dtype=float)[..., None, None]
     d = diurnal(hour, p)
-    heat = _spread(x, _kernel_weights(p))
-    gain = d * f * (col(p.beta_self) * x + col(p.beta) * heat * heat / (heat + p.x_ign)) * dt
+    noise = 1.0
     if rng is not None and p.sigma_proc > 0:
         s = p.sigma_proc * np.sqrt(dt)
-        gain = gain * np.exp(s * rng.standard_normal(x.shape) - 0.5 * s * s)
-    x_new = x * np.exp(-col(p.lam) * dt) + gain
-    # una celda no puede irradiar más rápido de lo que le permite su combustible:
-    # como mucho lo agota con tiempo característico tau_burn (conserva la energía)
-    x_new = np.minimum(x_new, f * col(p.e0) / p.tau_burn)
+        noise = np.exp(s * rng.standard_normal(x.shape) - 0.5 * s * s)
+    heat = _spread(x, _kernel_weights(p))
+    # encendida: relaja hacia el equilibrio que permite su combustible
+    x_eq = col(p.x_peak) * d * f * noise
+    x_on = x + (x_eq - x) * (1.0 - np.exp(-dt / p.tau_x))
+    # apagada: acumula el calor de las vecinas (y lo pierde despacio)
+    x_cold = x * np.exp(-p.lam * dt) + col(p.beta) * d * f * heat * heat / (heat + p.x_ign) * dt * noise
+    x_new = np.where(x > p.x_off, x_on, x_cold)
     x_new = np.where(x_new < X_MIN, 0.0, x_new)
     f_new = np.clip(f - x_new * dt / col(p.e0), 0.0, 1.0)
     return x_new, f_new

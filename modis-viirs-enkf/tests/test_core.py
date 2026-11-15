@@ -59,7 +59,7 @@ def test_model_energy_balance_and_diurnal_cycle():
     x[13:17, 13:17] = 15.0
     f = np.ones((30, 30))
     dt, energy = 1.0 / 6.0, 0.0
-    for k in range(60):
+    for k in range(120):
         x, f = step(x, f, p, dt, 12.0)
         energy += x.sum() * dt
     assert x.min() >= 0 and f.min() >= 0 and f.max() <= 1
@@ -68,13 +68,42 @@ def test_model_energy_balance_and_diurnal_cycle():
     assert energy == pytest.approx(p.e0 * (900 - f.sum()), rel=1e-6)
 
 
+def test_intensity_is_bounded_by_fuel_and_time_of_day():
+    """Una celda encendida tiende a x_peak * d(t) * f; nunca crece sin límite."""
+    p = FireParams(sigma_proc=0.0, x_peak=20.0)
+    x = np.full((20, 20), 5.0)
+    f = np.full((20, 20), 0.5)
+    peak = 0.0
+    for k in range(60):
+        x, f = step(x, f, p, 1.0 / 6.0, 14.0)
+        peak = max(peak, x.max())
+    assert 0.6 * 10.0 < peak <= 10.0           # equilibrio inicial: 20 MW x 1 x 0.5
+
+
+def test_cold_cells_only_light_up_by_contagion():
+    p = FireParams(sigma_proc=0.0)
+    f = np.ones((30, 30))
+    # un rescoldo aislado por debajo de x_off se enfría en vez de crecer
+    x = np.zeros((30, 30))
+    x[15, 15] = 0.5 * p.x_off
+    for k in range(60):
+        x, f = step(x, f, p, 1.0 / 6.0, 14.0)
+    assert x.sum() < 0.1 * p.x_off
+    # un parche encendido sí contagia a las celdas vecinas
+    x = np.zeros((30, 30))
+    x[13:17, 13:17] = 20.0
+    for k in range(60):
+        x, f = step(x, f, p, 1.0 / 6.0, 14.0)
+    assert (x > p.x_off).sum() > 16 and x[5, 5] == 0.0
+
+
 def test_step_is_vectorised_over_members():
     rng = np.random.default_rng(3)
     p = FireParams(sigma_proc=0.0).perturbed(4, rng)
     x = rng.gamma(1.0, 5.0, (4, 12, 12))
     f = np.full((4, 12, 12), 0.8)
     xa, fa = step(x, f, p, 0.1, 13.0)
-    one = FireParams(beta=p.beta[2], beta_self=p.beta_self[2], lam=p.lam[2], e0=p.e0[2],
+    one = FireParams(beta=p.beta[2], x_peak=p.x_peak[2], tau_res=p.tau_res[2],
                      wind_x=p.wind_x[2], wind_y=p.wind_y[2], sigma_proc=0.0)
     xb, fb = step(x[2], f[2], one, 0.1, 13.0)
     np.testing.assert_allclose(xa[2], xb)

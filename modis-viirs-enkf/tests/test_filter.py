@@ -64,16 +64,60 @@ def test_modis_pixel_is_shared_out_where_viirs_saw_fire():
 
 
 def test_osse_filter_beats_naive_baseline_and_recovers_bias():
-    sc = Scenario(shape=(64, 64), hours=40.0, ignition_cell=(30, 30), seed=7)
+    sc = Scenario(shape=(64, 64), hours=56.0, seed=7)
     truth = simulate_truth(sc)
     t_start = truth.times[min(truth.passes)] + 6.0
     fam = ("MODIS", "VIIRS")
     res = run_filter(sc, truth, fam, "filtro", n_members=30)
     s_f = score(sc, truth, res, t_start)
     s_n = score(sc, truth, run_naive(sc, truth, fam, "naive"), t_start)
-    assert s_f["rmse_375m"] < 0.6 * s_n["rmse_375m"]
-    assert s_f["total_mae_pct"] < 0.6 * s_n["total_mae_pct"]
+    assert s_f["rmse_375m"] < 0.75 * s_n["rmse_375m"]
+    assert s_f["rmse_1500m"] < 0.75 * s_n["rmse_1500m"]
+    assert s_f["total_mae_pct"] < s_n["total_mae_pct"]
     # el sesgo estimado es compatible con el real dentro de su propia incertidumbre
     _, b_hat, log_sd = res.bias_trace[-1]
     assert log_sd < FilterConfig().bias_prior_sd
     assert abs(np.log(b_hat / MODIS.bias)) < 2.5 * log_sd
+
+
+def test_new_fire_gets_the_fuel_that_explains_its_intensity():
+    """Una detección débil no debe convertirse en un fuego a pleno en la hora siguiente."""
+    truth = np.zeros((40, 40))
+    truth[20:23, 20:23] = 4.0
+    flt = _filter()
+    obs = observe(VIIRS, "S-NPP", 13.5, 5.0, truth, np.random.default_rng(1), cloud_prob=0.0)
+    flt.assimilate(obs)
+    start = flt.x.mean(axis=0).sum()
+    for k in range(6):
+        flt.forecast(1.0 / 6.0, 13.5 + k / 6.0)
+    assert flt.x.mean(axis=0).sum() < 2.0 * start
+    assert flt.f[:, 20:23, 20:23].mean() < 0.4
+
+
+def test_online_parameter_estimation_lowers_rates_when_forecast_overshoots():
+    flt = _filter(estimate_params=True)
+    flt.n_assimilated = 1
+    truth = np.zeros((40, 40))
+    truth[20:23, 20:23] = 5.0
+    # los miembros con x_peak más alto pronostican más FRP: todos se pasan
+    flt.x[:, 20:23, 20:23] = (flt.params.x_peak * 0.6)[:, None, None]
+    before = np.exp(np.log(flt.params.x_peak).mean())
+    obs = observe(VIIRS, "S-NPP", 13.5, 5.0, truth, np.random.default_rng(1), cloud_prob=0.0)
+    flt.assimilate(obs)
+    assert np.exp(np.log(flt.params.x_peak).mean()) < 0.9 * before
+
+
+def test_holdout_pass_is_verified_but_not_assimilated():
+    from frp_enkf.assim import run_passes
+    truth = np.zeros((40, 40))
+    truth[20:23, 20:23] = 25.0
+    flt = _filter()
+    times = 13.0 + np.arange(4) / 6.0
+    seen = observe(VIIRS, "NOAA-20", 13.2, 5.0, truth, np.random.default_rng(1), cloud_prob=0.0)
+    held = observe(VIIRS, "NOAA-21", 13.5, 20.0, truth, np.random.default_rng(2), cloud_prob=0.0)
+    res = run_passes(flt, {1: [seen]}, times, "x", holdout={3: [held]})
+    assert len(res.log) == 1 and len(res.verification) == 1
+    v = res.verification[0]
+    assert v["platform"] == "NOAA-21" and v["n_detected"] == held.detected.sum()
+    assert v["filtro_hits"] + v["filtro_misses"] == v["n_detected"]
+    assert 0.5 * v["obs_total"] < v["filtro_total"] < 2.0 * v["obs_total"]

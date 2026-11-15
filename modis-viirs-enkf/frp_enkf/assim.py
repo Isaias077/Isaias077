@@ -12,8 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .letkf import letkf_update
-from .model import CELL_KM, X_MIN, FireParams, step
-from .sensors import Observation
+from .model import CELL_KM, X_MIN, FireParams, diurnal, step
+from .sensors import Observation, grid_naive
 
 
 @dataclass
@@ -23,12 +23,12 @@ class FilterConfig:
     infl: float = 1.03          # inflación multiplicativa
     sigma_nondet: float = 0.3   # error (log) de una no-detección
     nondet_level: float = 1.0   # una no-detección despejada significa "FRP <= nivel * umbral"
-    extinct_mw: float = 0.0     # tras el análisis, una celda por debajo de esto está apagada
     birth_frac: float = 0.1     # un miembro "no explica" si predice < frac * obs
     estimate_bias: bool = True  # estimar en línea el sesgo MODIS/VIIRS
     bias_prior_sd: float = 0.3  # desvío a priori de log(b)
     bias_walk_sd: float = 0.02  # caminata aleatoria de log(b) por pasada
     bias_drift_per_h: float = 0.08  # desconfianza por hora desde el último VIIRS
+    birth_fuel_weight: float = 0.5  # 0: combustible a priori; 1: el que explica la intensidad
     estimate_params: bool = False   # ajustar en línea las tasas del modelo de fuego
     param_obs_sd: float = 0.3       # error (log) del FRP total usado para ajustarlas
     param_min_sd: float = 0.05      # dispersión mínima (log) que conservan las tasas
@@ -88,7 +88,7 @@ class FireFilter:
         """Ajusta las tasas del modelo con el FRP total de la pasada (EnSRF escalar).
 
         Los miembros con tasas más altas pronostican más FRP total; esa covarianza
-        permite corregir beta, beta_self y lam cuando el pronóstico se pasa o se
+        permite corregir beta, x_peak y tau_res cuando el pronóstico se pasa o se
         queda corto. Una sola observación escalar evita correlaciones espurias.
         """
         cfg, thr = self.cfg, obs.thr_mw
@@ -101,7 +101,7 @@ class FireFilter:
         r = cfg.param_obs_sd ** 2
         alpha = 1.0 / (1.0 + np.sqrt(r / (var + r)))
         dh = h - h.mean()
-        for name in ("beta", "beta_self", "lam"):
+        for name in self.params.RATES:
             p = np.log(np.asarray(getattr(self.params, name), dtype=float))
             if p.ndim == 0:
                 continue
@@ -120,6 +120,9 @@ class FireFilter:
         ff = self.f.reshape(self.n, -1)
         prior = xf.mean(axis=0)
         H, born = obs.H, 0
+        # intensidad de equilibrio de una celda con combustible completo, por miembro
+        x_full = np.broadcast_to(np.asarray(self.params.x_peak, dtype=float), (self.n,)) \
+            * diurnal(obs.time_h, self.params)
         for o in np.flatnonzero(obs.detected):
             lacking = np.flatnonzero(pred[:, o] < self.cfg.birth_frac * obs.frp[o])
             if lacking.size == 0:
@@ -135,6 +138,12 @@ class FireFilter:
                 amount = obs.frp[o] / b * np.exp(obs.sensor.sigma_log * self.rng.standard_normal())
                 # reparto que conserva la energía observada (las columnas de H suman 1)
                 xf[j, cells] += amount * w * blob / (w * blob).sum()
+                # el combustible de las celdas recién encendidas es el que explica su
+                # intensidad: sin esto el modelo las llevaría al máximo en la hora siguiente
+                lit = cells[xf[j, cells] > self.params.x_off]
+                implied = np.clip(xf[j, lit] / x_full[j], 0.05, 1.0)
+                w_f = self.cfg.birth_fuel_weight
+                ff[j, lit] = ff[j, lit] ** (1.0 - w_f) * implied ** w_f
                 born += 1
         return born
 
@@ -177,7 +186,7 @@ class FireFilter:
         cells = letkf_update([z, f], yb, yo, r, self.cell_xy, obs_xy,
                              cfg.loc_km + 0.5 * max(obs.ds_km, obs.dt_km), cfg.infl)
         x = np.exp(z) - cfg.eps
-        self.x = np.where(x < max(X_MIN, cfg.extinct_mw), 0.0, x).reshape(self.x.shape)
+        self.x = np.where(x < X_MIN, 0.0, x).reshape(self.x.shape)
         self.f = np.clip(f, 0.0, 1.0).reshape(self.f.shape)
         if not is_modis:
             self.last_viirs_h = obs.time_h
@@ -185,9 +194,8 @@ class FireFilter:
                 "born": born, "cells": cells, "bias": float(np.exp(self.log_b)),
                 # lo que el pronóstico esperaba ver en los píxeles detectados, y lo visto
                 "pred_sum": float(b * hx[:, det].mean(axis=0).sum()),
-                "beta": float(np.exp(np.mean(np.log(self.params.beta)))),
-                "beta_self": float(np.exp(np.mean(np.log(self.params.beta_self)))),
-                "lam": float(np.exp(np.mean(np.log(self.params.lam)))),
+                **{name: float(np.exp(np.mean(np.log(getattr(self.params, name)))))
+                   for name in self.params.RATES},
                 "obs_sum": float(obs.frp[det].sum())}
 
 
@@ -200,14 +208,41 @@ class RunResult:
     bias_trace: list[tuple[float, float, float]]   # (hora, b estimado, desvío de log b)
     log: list[dict]
     times: np.ndarray | None = None    # (T,) horas de cada campo guardado
+    verification: list[dict] | None = None   # una entrada por pasada reservada
+
+
+def verify_pass(flt: FireFilter, obs: Observation, naive: np.ndarray) -> dict:
+    """Compara una pasada NO asimilada con lo que predicen el filtro y la persistencia.
+
+    El filtro predice con la media del ensemble vista a través del H de esa pasada;
+    la persistencia, con el mapa grillado de la última pasada asimilada. Solo
+    cuentan los píxeles despejados y, en las sumas, el FRP por encima del umbral.
+    """
+    b = float(np.exp(flt.log_b)) if obs.sensor.family == "MODIS" else 1.0
+    out = {"time_h": obs.time_h, "platform": obs.platform, "family": obs.sensor.family,
+           "obs_total": float(np.nansum(obs.frp[obs.detected])),
+           "n_detected": int(obs.detected.sum())}
+    for name, field in (("filtro", flt.x.mean(axis=0)), ("persistencia", naive)):
+        pred = b * (obs.H @ field.ravel()) if name == "filtro" else obs.H @ field.ravel()
+        fire = obs.clear & (pred > obs.thr_mw)
+        hits = int((fire & obs.detected).sum())
+        out[f"{name}_total"] = float(pred[fire].sum())
+        out[f"{name}_hits"] = hits
+        out[f"{name}_misses"] = int(obs.detected.sum()) - hits
+        out[f"{name}_false"] = int((fire & ~obs.detected).sum())
+    return out
 
 
 def run_passes(flt: FireFilter, passes: dict[int, list[Observation]], times: np.ndarray,
-               label: str, store_every: int = 1) -> RunResult:
+               label: str, store_every: int = 1,
+               holdout: dict[int, list[Observation]] | None = None) -> RunResult:
     """Avanza el filtro por `times` asimilando passes[k] al llegar al paso k.
 
     Guarda media y dispersión cada `store_every` pasos (y el FRP total siempre).
+    Las pasadas de `holdout` no se asimilan: solo se comparan con el pronóstico.
     """
+    naive = np.zeros((flt.ny, flt.nx))
+    verification = []
     T = len(times) - 1
     keep = np.arange(0, T + 1, store_every)
     mean = np.zeros((keep.size, flt.ny, flt.nx))
@@ -216,8 +251,11 @@ def run_passes(flt: FireFilter, passes: dict[int, list[Observation]], times: np.
     bias_trace, log = [], []
     for k in range(1, T + 1):
         flt.forecast(float(times[k] - times[k - 1]), float(times[k - 1]))
+        for obs in (holdout or {}).get(k, []):
+            verification.append(verify_pass(flt, obs, naive))
         for obs in passes.get(k, []):
             info = flt.assimilate(obs)
+            naive = grid_naive(obs, (flt.ny, flt.nx))
             log.append({"time_h": obs.time_h, "platform": obs.platform,
                         "family": obs.sensor.family, **info})
             if obs.sensor.family == "MODIS" and flt.cfg.estimate_bias:
@@ -226,4 +264,4 @@ def run_passes(flt: FireFilter, passes: dict[int, list[Observation]], times: np.
         if k % store_every == 0:
             mean[k // store_every] = flt.x.mean(axis=0)
             spread[k // store_every] = flt.x.std(axis=0, ddof=1)
-    return RunResult(label, mean, spread, totals, bias_trace, log, times[keep])
+    return RunResult(label, mean, spread, totals, bias_trace, log, times[keep], verification)

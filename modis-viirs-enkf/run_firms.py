@@ -18,6 +18,7 @@ from datetime import date
 import numpy as np
 
 from frp_enkf import firms, plots
+from frp_enkf.calibrate import calibrate_from_detections
 from frp_enkf.assim import FilterConfig, FireFilter, run_passes
 from frp_enkf.model import FireParams, smooth_field
 
@@ -64,6 +65,26 @@ def forecast_skill(log: list[dict]) -> dict:
     return out
 
 
+def holdout_skill(rows: list[dict]) -> dict:
+    """Resume la validación con el satélite reservado, para el filtro y la persistencia.
+
+    factor_mediano: error mediano del FRP total de la pasada, como factor.
+    csi: aciertos / (aciertos + omisiones + falsas alarmas) sobre píxeles con fuego.
+    """
+    out = {"pasadas": len(rows)}
+    floor = 1.0   # MW, para que una pasada sin fuego predicho no dé un factor infinito
+    for name in ("filtro", "persistencia"):
+        ratio = [np.log((r[f"{name}_total"] + floor) / (r["obs_total"] + floor)) for r in rows]
+        h = sum(r[f"{name}_hits"] for r in rows)
+        m = sum(r[f"{name}_misses"] for r in rows)
+        f = sum(r[f"{name}_false"] for r in rows)
+        out[name] = {"factor_mediano": float(np.exp(np.median(np.abs(ratio)))),
+                     "sesgo_mediano": float(np.exp(np.median(ratio))),
+                     "csi": h / max(h + m + f, 1), "aciertos": h, "omisiones": m,
+                     "falsas_alarmas": f}
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--bbox", required=True, help="oeste,sur,este,norte en grados")
@@ -77,6 +98,13 @@ def main() -> None:
     ap.add_argument("--members", type=int, default=50)
     ap.add_argument("--no-non-detections", action="store_true",
                     help="no asumir que los píxeles sin detección estaban despejados")
+    ap.add_argument("--holdout", help="plataforma que no se asimila y se usa para validar, "
+                    "por ejemplo NOAA-21")
+    ap.add_argument("--no-calibration", action="store_true",
+                    help="no calibrar x_peak y d_min con las detecciones")
+    ap.add_argument("--nondet-level", type=float, default=1.0,
+                    help="una no-detección significa FRP <= nivel x umbral de detección")
+    ap.add_argument("--birth-fuel-weight", type=float, default=0.5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="salida_firms")
     args = ap.parse_args()
@@ -102,18 +130,30 @@ def main() -> None:
     t_start = np.floor(passes[0].time_h) - 1.0
     times = t_start + dt_h * np.arange(int(np.ceil((passes[-1].time_h + 3.0 - t_start) / dt_h)) + 1)
     by_step: dict[int, list] = {}
+    held: dict[int, list] = {}
     for o in passes:
-        by_step.setdefault(max(1, int(round((o.time_h - t_start) / dt_h))), []).append(o)
+        target = held if o.platform == args.holdout else by_step
+        target.setdefault(max(1, int(round((o.time_h - t_start) / dt_h))), []).append(o)
+    if args.holdout and not held:
+        raise SystemExit(f"No hay pasadas de {args.holdout} para reservar.")
+
+    model, calib = FireParams(), {}
+    if not args.no_calibration:
+        model, calib = calibrate_from_detections(dets)
+        if "x_peak_mw" in calib:
+            print(f"Calibración: x_peak = {model.x_peak:.1f} MW, d_min = {model.d_min:.2f}")
 
     rng = np.random.default_rng(args.seed)
     # sin mapa de combustible real: uno uniforme con incertidumbre amplia
     fuel = np.clip(0.75 + 0.2 * smooth_field(dom.shape, 5.0, rng, args.members), 0.2, 1.0)
-    has_viirs = any(o.sensor.family == "VIIRS" for o in passes)
+    has_viirs = any(o.sensor.family == "VIIRS" for ps in by_step.values() for o in ps)
     # sin máscara de nubes, una no-detección vale menos que en el experimento sintético;
     # y como el modelo no está calibrado para este incendio, sus tasas se ajustan en línea
-    cfg = FilterConfig(sigma_nondet=0.6, estimate_bias=has_viirs, estimate_params=True)
-    flt = FireFilter(fuel, FireParams().perturbed(args.members, rng, rel=0.3, wind_sd=0.3), rng, cfg)
-    res = run_passes(flt, by_step, times, "FIRMS", store_every=6)
+    cfg = FilterConfig(sigma_nondet=0.6, estimate_bias=has_viirs, estimate_params=True,
+                       nondet_level=args.nondet_level,
+                       birth_fuel_weight=args.birth_fuel_weight)
+    flt = FireFilter(fuel, model.perturbed(args.members, rng, rel=0.3, wind_sd=0.3), rng, cfg)
+    res = run_passes(flt, by_step, times, "FIRMS", store_every=6, holdout=held)
 
     os.makedirs(args.out, exist_ok=True)
     tot = res.total_members
@@ -126,7 +166,19 @@ def main() -> None:
                         dispersion_mw=res.spread.astype("f4"), horas_locales=res.times,
                         utc=np.array([str(dom.utc(t)) for t in res.times]), bbox=np.array(bbox))
     skill = forecast_skill(res.log)
-    summary = {"bbox": bbox, "pasadas": len(passes), "habilidad_pronostico": skill}
+    summary = {"bbox": bbox, "pasadas": len(passes), "calibracion": calib,
+               "habilidad_pronostico": skill,
+               "frp_total_maximo_mw": float(tot.mean(axis=1).max()),
+               "suma_maxima_de_una_pasada_mw": float(max(np.nansum(o.frp) for o in passes))}
+    print(f"FRP total máximo del filtro: {summary['frp_total_maximo_mw']:.0f} MW; "
+          f"mayor suma de una pasada: {summary['suma_maxima_de_una_pasada_mw']:.0f} MW")
+    if res.verification:
+        summary["validacion_" + args.holdout] = holdout_skill(res.verification)
+        for name, s in summary["validacion_" + args.holdout].items():
+            if isinstance(s, dict):
+                print(f"Validación con {args.holdout}, {name}: error del total ×{s['factor_mediano']:.2f}, "
+                      f"CSI {s['csi']:.2f} (aciertos {s['aciertos']}, omisiones {s['omisiones']}, "
+                      f"falsas alarmas {s['falsas_alarmas']})")
     if res.bias_trace:
         _, b, sd = res.bias_trace[-1]
         summary["sesgo_modis_sobre_viirs"] = {"b": b, "desvio_log": sd}

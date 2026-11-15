@@ -124,3 +124,22 @@ def test_fetch_recent_builds_keyless_url(monkeypatch):
     assert calls == [firms.BASE_URL + "/data/active_fire/modis-c6.1/csv/MODIS_C6_1_Global_7d.csv"]
     with pytest.raises(firms.FirmsError):
         firms.fetch_recent("MODIS_SP", "7d")
+
+
+def test_calibration_reads_peak_intensity_and_night_floor_from_viirs():
+    from frp_enkf.calibrate import calibrate_from_detections
+    rng = np.random.default_rng(0)
+    n = 400
+    day = np.arange(n) < 300
+    frp = np.where(day, rng.gamma(2.0, 5.0, n), rng.gamma(2.0, 1.5, n))
+    d = firms.Detections(VIIRS, np.zeros(n), np.zeros(n), frp, np.full(n, 0.40), np.full(n, 0.38),
+                         np.zeros(n, dtype="datetime64[m]"), np.full(n, "NOAA-20", dtype=object), day)
+    params, report = calibrate_from_detections([d])
+    assert params.x_peak == pytest.approx(np.percentile(frp[day], 90))
+    assert 0.2 < params.d_min < 0.4
+    assert report["n_dia"] == 300 and report["n_noche"] == 100
+    # píxeles lejos del nadir no miden una sola celda: no se usan
+    far = firms.Detections(VIIRS, d.lat, d.lon, d.frp, np.full(n, 0.75), np.full(n, 0.75),
+                           d.time, d.platform, d.day)
+    params, report = calibrate_from_detections([far])
+    assert params.x_peak == 40.0 and report["n_dia"] == 0

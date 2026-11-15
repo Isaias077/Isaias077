@@ -27,19 +27,19 @@ PLATFORMS: list[tuple[str, Sensor, tuple[float, float]]] = [
 
 @dataclass
 class Scenario:
-    shape: tuple[int, int] = (80, 80)
+    shape: tuple[int, int] = (96, 96)
     t0_h: float = 6.0            # hora local de inicio
     hours: float = 72.0
     dt_h: float = 1.0 / 6.0      # 10 minutos
     ignition_h: float = 10.0
-    ignition_cell: tuple[int, int] = (38, 44)
+    ignition_cell: tuple[int, int] | None = None   # None: la celda con más combustible del centro
     ignition_mw: float = 15.0   # por celda, en un parche de 5 x 5
     seed: int = 7
     truth: FireParams = field(default_factory=lambda: FireParams(
-        beta=2.8, beta_self=1.0, lam=0.5, e0=60.0, d_min=0.4, wind_x=0.3, wind_y=0.1))
+        beta=0.40, x_peak=40.0, tau_res=4.0, wind_x=0.3, wind_y=0.1))
     # el modelo del filtro está deliberadamente mal calibrado
     model: FireParams = field(default_factory=lambda: FireParams(
-        beta=2.5, beta_self=0.9, lam=0.55, e0=70.0, d_min=0.45, peak_hour=13.0,
+        beta=0.34, x_peak=46.0, tau_res=3.4, d_min=0.45, peak_hour=13.0,
         wind_x=0.1, wind_y=0.25))
     fuel_error: float = 0.12     # error del mapa de combustible del filtro
     cloud_prob: float = 0.3
@@ -57,6 +57,14 @@ class Truth:
     passes: dict[int, list[Observation]]   # paso -> pasadas que caen en ese paso
 
 
+def _richest_central_cell(fuel: np.ndarray) -> tuple[int, int]:
+    """Celda con más combustible en el tercio central de la grilla."""
+    ny, nx = fuel.shape
+    sub = fuel[ny // 3:2 * ny // 3, nx // 3:2 * nx // 3]
+    iy, ix = np.unravel_index(np.argmax(sub), sub.shape)
+    return int(iy + ny // 3), int(ix + nx // 3)
+
+
 def simulate_truth(sc: Scenario) -> Truth:
     rng = np.random.default_rng(sc.seed)
     fuel0 = make_fuel_map(sc.shape, rng)
@@ -65,7 +73,7 @@ def simulate_truth(sc: Scenario) -> Truth:
     xs = np.zeros((sc.n_steps + 1,) + sc.shape)
     for k in range(sc.n_steps):
         if abs(times[k] - sc.ignition_h) < 0.5 * sc.dt_h:
-            iy, ix = sc.ignition_cell
+            iy, ix = sc.ignition_cell or _richest_central_cell(fuel0)
             x[iy - 2:iy + 3, ix - 2:ix + 3] = sc.ignition_mw
         x, f = step(x, f, sc.truth, sc.dt_h, times[k], rng)
         xs[k + 1] = x
