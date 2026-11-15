@@ -181,6 +181,13 @@ def main() -> None:
           f"mayor suma de una pasada: {summary['suma_maxima_de_una_pasada_mw']:.0f} MW")
     if res.verification:
         summary["validacion_" + args.holdout] = holdout_skill(res.verification)
+        cols = ["time_h", "platform", "n_detected", "obs_total", "filtro_total",
+                "persistencia_total"]
+        with open(os.path.join(args.out, "validacion.csv"), "w", encoding="utf-8") as fh:
+            fh.write(",".join(cols) + "\n")
+            for row in res.verification:
+                fh.write(",".join(f"{row[c]:.2f}" if isinstance(row[c], float) else str(row[c])
+                                  for c in cols) + "\n")
         for name, s in summary["validacion_" + args.holdout].items():
             if isinstance(s, dict):
                 print(f"Validación con {args.holdout}, {name}: error del total ×{s['factor_mediano']:.2f}, "

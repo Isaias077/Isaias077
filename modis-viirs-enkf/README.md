@@ -46,7 +46,7 @@ covarianza del ensemble lleva la corrección a las celdas donde ya había fuego.
 ```bash
 pip install -r requirements.txt
 python run_osse.py            # ~1 minuto; escribe figures/ y figures/metrics.json
-python -m pytest -q           # 35 tests
+python -m pytest -q           # 39 tests
 ```
 
 Opciones: `--seed`, `--members`, `--hours`, `--out`, `--no-figures`.
@@ -209,6 +209,65 @@ Qué muestra:
   se reservara o no NOAA-21 (hacia 137° y hacia 340°). El rectángulo contiene
   varios focos, y el centroide global se mueve por encendidos y apagados, no
   por viento. Los resultados de arriba son con el viento fijo.
+
+## Mapas de focos de calor por día, semana y mes
+
+`make_hotspot_maps.py` agrega los campos horarios del filtro en hora solar local
+y los compara con las detecciones crudas de cada sensor:
+
+```bash
+python make_hotspot_maps.py --run-dir figures/queensland \
+    --csv-dir data/queensland_2026-11 --out figures/focos
+```
+
+Escribe un mapa por escala (`focos_por_dia.png`, `focos_por_semana.png`,
+`focos_por_mes.png`), `patrones.png`, `tendencias.png` y la tabla
+`resumen_por_escala.csv`. Los días van de medianoche a medianoche local, las
+semanas son semanas ISO y los meses son meses calendario. Los períodos
+incompletos se marcan como parciales y no entran en la tendencia.
+
+![Focos por día](figures/focos/focos_por_dia.png)
+
+Cada columna es un día. Arriba, la energía radiada según el filtro a 375 m;
+abajo, lo que detectó cada sensor. En los días completos MODIS ve entre 4 y 86 focos donde
+VIIRS ve entre 200 y 460, y el filtro los combina en un solo mapa.
+
+![Patrones](figures/focos/patrones.png)
+
+- **Dónde ardió:** la energía acumulada en todo el período.
+- **Cuándo ardió más:** el día de máxima actividad de cada celda. Muestra el
+  avance del fuego: los bordes norte y este ardieron al final.
+- **Hacia dónde va:** la tendencia entre días completos. En naranja, donde la
+  actividad aumenta; en azul, donde se apaga.
+
+![Tendencias](figures/focos/tendencias.png)
+
+Con los datos de Queensland hay 6 días completos, 1 semana completa (116 GW h)
+y ningún mes completo. La actividad tuvo su máximo el 11 de noviembre (25 GW h)
+y cayó a 11 GW h el 14.
+
+Dos cuidados al leerlos:
+
+- **La escala mensual no está probada con datos reales.** Los archivos sin
+  clave de FIRMS cubren 7 días. Para un mes hay que correr `run_firms.py` con
+  `--start`, `--days 30` y una MAP_KEY, y después este script.
+- **El patrón horario depende de cuándo pasan los satélites.** El salto de las
+  13 a las 14 h coincide con las pasadas de VIIRS: ahí el filtro se corrige de
+  golpe. No es evidencia de que el fuego crezca justo a esa hora.
+
+## Gráficas de estado
+
+`make_status_figures.py` resume cómo está quedando el filtro. Tarda unos 3
+minutos; con `--replot` redibuja sin recalcular.
+
+![Sintético por semilla](figures/estado/1_sintetico_semillas.png)
+![Sesgo y viento](figures/estado/2_sesgo_y_viento.png)
+![Queensland](figures/estado/3_queensland.png)
+
+En la validación con NOAA-21 la mayoría de los puntos del filtro queda por
+debajo de la diagonal: al llegar una pasada no asimilada, el filtro tiende a
+quedarse corto, porque no anticipa los focos que se encienden entre pasadas.
+La sobreestimación de los picos aparece después, al asimilarlas.
 
 ## Límites
 

@@ -1,0 +1,53 @@
+{
+  "bbox": [
+    144.35,
+    -19.75,
+    144.85,
+    -19.25
+  ],
+  "pasadas": 48,
+  "calibracion": {
+    "n_dia": 839,
+    "n_noche": 479,
+    "x_peak_mw": 17.43,
+    "d_min": 0.19369369369369369
+  },
+  "habilidad_pronostico": {
+    "MODIS": {
+      "pasadas": 15,
+      "filtro_factor_mediano": 2.454726923273217,
+      "persistencia_factor_mediano": 6.735898237931393
+    },
+    "VIIRS": {
+      "pasadas": 15,
+      "filtro_factor_mediano": 4.461576125919817,
+      "persistencia_factor_mediano": 8.339165960070918
+    }
+  },
+  "frp_total_maximo_mw": 3075.0027209317564,
+  "suma_maxima_de_una_pasada_mw": 2088.3900000000003,
+  "validacion_NOAA-21": {
+    "pasadas": 16,
+    "filtro": {
+      "factor_mediano": 2.629602238561147,
+      "sesgo_mediano": 0.3802856513185717,
+      "csi": 0.20621181262729124,
+      "aciertos": 405,
+      "omisiones": 710,
+      "falsas_alarmas": 849
+    },
+    "persistencia": {
+      "factor_mediano": 3.6829580265301307,
+      "sesgo_mediano": 0.5169459416395671,
+      "csi": 0.20460933108487914,
+      "aciertos": 364,
+      "omisiones": 751,
+      "falsas_alarmas": 664
+    }
+  },
+  "sesgo_modis_sobre_viirs": {
+    "b": 1.0,
+    "desvio_log": 0.3,
+    "pares_casi_simultaneos": 0
+  }
+}
