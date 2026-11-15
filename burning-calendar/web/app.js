@@ -388,8 +388,8 @@ async function analyze() {
   status("Calculando…");
   try {
     state.cal = await api("/api/calendar", query());
-    const complete = state.cal.anual.filter((a) => a.completo);
-    if (!state.year) state.year = complete[complete.length - 1].anio;
+    // por defecto, el año en curso: es el que se quiere comparar con lo habitual
+    if (!state.year) state.year = state.cal.anual[state.cal.anual.length - 1].anio;
     $("dl-calendar").href = `/api/calendar.csv?${new URLSearchParams(query())}`;
     renderCalendar();
     renderSeason();

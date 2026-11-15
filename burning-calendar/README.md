@@ -90,6 +90,12 @@ noviembre se comparan con la mediana del 1 al 15 de noviembre de los demás
 años, todos en la misma escala armonizada. En el calendario el mes en curso
 aparece rayado y no entra en la climatología.
 
+Con los datos de Paraguay bajados el 15 de noviembre de 2026: del 1 al 15 de
+noviembre hubo 3.542 hotspots armonizados, contra una mediana de 4.626 en los
+mismos días de 2000 a 2025 (×0,77, percentil 35). En el perfil estacional ese
+punto aparece hueco y se ve bajo porque se dibuja contra la mediana del mes
+entero; el número comparable es el de la tarjeta y el del calendario.
+
 Si el área tiene menos de 18 meses con fuego en el período común, se usa el
 ajuste de todo el país y la aplicación lo avisa.
 
@@ -110,6 +116,9 @@ predicho difiere del observado en un 7 % en un mes típico.
 
 - **El año en curso depende de la API y de su clave.** Sin `--recent`, la serie
   termina en diciembre del año pasado.
+- **Los datos NRT se reprocesan.** FIRMS reemplaza los NRT por los SP unos meses
+  después; volver a correr `--recent` baja la versión SP cuando aparece. Los
+  últimos meses pueden cambiar un poco.
 - **Es una armonización estadística de conteos.** Supone que la relación entre
   MODIS y VIIRS de 2012–2025 vale también para 2000–2011. No corrige nubes ni
   cambios de órbita.
