@@ -122,9 +122,13 @@ function renderKpis(cal, dens) {
   const items = [
     ["Hotspots en el rango elegido", num(dens.total),
       `detectados por ${dens.sensor}, ${$("start").value} a ${$("end").value}`],
-    [`Último mes con datos: ${MONTHS_LONG[last.mes_del_anio - 1]} de ${last.anio}`,
-      num(last.armonizado),
-      `${anomalyText(last.anomalia)}; mediana histórica ${num(last.mediana_historica)}`],
+    last.parcial
+      ? [`Mes en curso: 1 al ${last.dias} de ${MONTHS_LONG[last.mes_del_anio - 1]} de ${last.anio}`,
+        num(last.armonizado),
+        `${anomalyText(last.anomalia)}; mediana de los mismos días en otros años: ${num(last.mediana_historica)}`]
+      : [`Último mes con datos: ${MONTHS_LONG[last.mes_del_anio - 1]} de ${last.anio}`,
+        num(last.armonizado),
+        `${anomalyText(last.anomalia)}; mediana histórica ${num(last.mediana_historica)}`],
     ["Mes de más actividad", MONTHS_LONG[peak.mes_del_anio - 1],
       `mediana de ${num(peak.mediana)} hotspots`],
     ["Año de más actividad", String(top.anio), `${num(top.armonizado)} hotspots armonizados`],
@@ -155,6 +159,13 @@ function renderCalendar() {
   MONTHS.forEach((m, i) => svg.append(svgEl("text",
     { x: left + i * cw + cw / 2, y: 14, "text-anchor": "middle" }, m)));
   svg.append(svgEl("text", { x: left + 12 * cw + 14, y: 14 }, "total del año"));
+  // Rayado para el mes en curso, que todavía no tiene todos sus días.
+  const defs = svgEl("defs");
+  const pat = svgEl("pattern", { id: "partial", width: 6, height: 6, patternUnits: "userSpaceOnUse",
+    patternTransform: "rotate(45)" });
+  pat.append(svgEl("rect", { width: 2.5, height: 6, fill: "#ffffff", opacity: 0.75 }));
+  defs.append(pat);
+  svg.append(defs);
 
   const maxYear = Math.max(...cal.anual.map((a) => a.armonizado), 1);
   years.forEach((year, r) => {
@@ -178,14 +189,16 @@ function renderCalendar() {
     const fill = state.mode === "count"
       ? (m.armonizado > 0 ? SEQ[classOf(m.armonizado, breaks)] : EMPTY)
       : DIV[anomalyClass(m.anomalia)];
-    const what = `${MONTHS_LONG[c]} de ${m.anio}: ${num(m.armonizado)} hotspots`;
+    const days = m.parcial ? `1 al ${state.cal.ultimo_mes.dias} de ` : "";
+    const what = `${days}${MONTHS_LONG[c]} de ${m.anio}: ${num(m.armonizado)} hotspots`;
     const cell = svgEl("rect", { x: left + c * cw, y: top + r * ch, width: cw, height: ch, rx: 4,
       fill, class: "cell", tabindex: 0, role: "button", "aria-label": `${what}, ${anomalyText(m.anomalia)}` });
     const detail = m.origen === "VIIRS"
       ? `VIIRS observado. MODIS vio ${num(m.modis_terra + m.modis_aqua)}.`
       : `MODIS convertido (vio ${num(m.modis_terra + m.modis_aqua)}).<br>Rango probable: ${num(m.bajo)} a ${num(m.alto)}.`;
+    const note = m.parcial ? "<br><i>Mes en curso: comparado con los mismos días de otros años.</i>" : "";
     cell.addEventListener("mousemove", (ev) => showTip(ev,
-      `<b>${what}</b><br>${anomalyText(m.anomalia)} (percentil ${m.percentil.toFixed(0)})<br>${detail}`));
+      `<b>${what}</b><br>${anomalyText(m.anomalia)} (percentil ${m.percentil.toFixed(0)})<br>${detail}${note}`));
     cell.addEventListener("mouseleave", hideTip);
     const zoom = () => {
       const lastDay = new Date(m.anio, c + 1, 0).getDate();
@@ -196,6 +209,10 @@ function renderCalendar() {
     cell.addEventListener("click", zoom);
     cell.addEventListener("keydown", (ev) => { if (ev.key === "Enter") zoom(); });
     svg.append(cell);
+    if (m.parcial) {
+      svg.append(svgEl("rect", { x: left + c * cw + 1, y: top + r * ch + 1, width: cw - 2,
+        height: ch - 2, rx: 3, fill: "url(#partial)", "pointer-events": "none" }));
+    }
   });
 
   // Línea que separa la era de MODIS convertido de la de VIIRS observado.
@@ -247,9 +264,11 @@ function renderSeason() {
       points: yearRows.map((r) => `${x(r.mes_del_anio - 1)},${y(r.armonizado)}`).join(" ") }));
     yearRows.forEach((r) => {
       const dot = svgEl("circle", { cx: x(r.mes_del_anio - 1), cy: y(r.armonizado), r: 5,
-        fill: "#eb6834", stroke: "#fff", "stroke-width": 2 });
+        fill: r.parcial ? "#ffffff" : "#eb6834", stroke: r.parcial ? "#eb6834" : "#fff",
+        "stroke-width": 2 });
       dot.addEventListener("mousemove", (ev) => showTip(ev,
-        `<b>${MONTHS_LONG[r.mes_del_anio - 1]} de ${r.anio}</b><br>${num(r.armonizado)} hotspots<br>` +
+        `<b>${MONTHS_LONG[r.mes_del_anio - 1]} de ${r.anio}</b>${r.parcial ? " (mes en curso, incompleto)" : ""}` +
+        `<br>${num(r.armonizado)} hotspots<br>` +
         `mediana histórica: ${num(c[r.mes_del_anio - 1].mediana)}`));
       dot.addEventListener("mouseleave", hideTip);
       svg.append(dot);
@@ -347,7 +366,10 @@ async function refreshMap() {
   drawDensity(dens, getBbox());
   $("dl-hotspots").href = `/api/hotspots.csv?${new URLSearchParams(q)}`;
   if (state.cal) renderKpis(state.cal, dens);
-  status(`${num(dens.total)} hotspots de ${dens.sensor} en el mapa, del ${q.start} al ${q.end}.`);
+  const cov = currentCountry().cobertura;
+  const why = dens.sensor === "MODIS" && q.start >= "2012-01-20"
+    ? ` Se usa MODIS porque VIIRS S-NPP solo tiene datos hasta el ${cov.viirs_hasta}.` : "";
+  status(`${num(dens.total)} hotspots de ${dens.sensor} en el mapa, del ${q.start} al ${q.end}.${why}`);
   return dens;
 }
 
@@ -403,8 +425,16 @@ function currentCountry() {
   return state.meta.paises.find((p) => p.pais === $("country").value);
 }
 
+function showCoverage(c) {
+  const cov = c.cobertura;
+  let text = `Datos hasta el ${cov.modis_hasta} (MODIS) y el ${cov.viirs_hasta} (VIIRS S-NPP).`;
+  if (cov.actualizado) text += ` Año en curso actualizado el ${cov.actualizado.slice(0, 10)}.`;
+  $("coverage").textContent = text;
+}
+
 function selectCountry() {
   const c = currentCountry();
+  showCoverage(c);
   setBbox(c.bbox);
   const end = new Date(c.ultimo_dia);
   const start = new Date(end);

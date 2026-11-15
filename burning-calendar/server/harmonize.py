@@ -81,6 +81,19 @@ def cross_validate(month: np.ndarray, modis: np.ndarray, viirs: np.ndarray) -> d
     }
 
 
+def apply(month: np.ndarray, terra: np.ndarray, aqua: np.ndarray, viirs: np.ndarray,
+          viirs_end: int, a: float, b: float, sigma: float) -> dict:
+    """Serie armonizada con un ajuste ya hecho: VIIRS hasta viirs_end, MODIS convertido fuera."""
+    modis = terra_to_modis(month, terra, aqua)
+    from_viirs = (month >= VIIRS_START) & (month <= viirs_end)
+    est = predict(modis, a, b)
+    lo = np.maximum(np.expm1(np.log1p(est) - Z90 * sigma), 0.0)
+    hi = np.expm1(np.log1p(est) + Z90 * sigma)
+    return {"modis": modis, "harmonized": np.where(from_viirs, viirs, est),
+            "low": np.where(from_viirs, viirs, lo), "high": np.where(from_viirs, viirs, hi),
+            "from_viirs": from_viirs}
+
+
 def harmonize(month: np.ndarray, terra: np.ndarray, aqua: np.ndarray, viirs: np.ndarray,
               viirs_end: int, fallback: tuple[float, float, float] | None = None) -> dict:
     """Serie mensual armonizada.
@@ -101,36 +114,49 @@ def harmonize(month: np.ndarray, terra: np.ndarray, aqua: np.ndarray, viirs: np.
     else:
         a, b, sigma, cv, origin = 0.0, 1.0, 0.0, None, "ninguno"
 
-    est = predict(modis, a, b)
-    lo = np.maximum(np.expm1(np.log1p(est) - Z90 * sigma), 0.0)
-    hi = np.expm1(np.log1p(est) + Z90 * sigma)
-    harmonized = np.where(overlap, viirs, est)
-    return {
-        "modis": modis, "harmonized": harmonized,
-        "low": np.where(overlap, viirs, lo), "high": np.where(overlap, viirs, hi),
-        "from_viirs": overlap,
-        "fit": {"a": a, "b": b, "sigma": sigma, "origen": origin,
-                "meses_solapados": int(active.sum())},
-        "cv": cv,
-    }
+    return {**apply(month, terra, aqua, viirs, viirs_end, a, b, sigma),
+            "fit": {"a": a, "b": b, "sigma": sigma, "origen": origin,
+                    "meses_solapados": int(active.sum())},
+            "cv": cv}
 
 
-def calendar_stats(month: np.ndarray, value: np.ndarray) -> dict:
-    """Climatología por mes del año y anomalía de cada mes frente a los demás años."""
+def calendar_stats(month: np.ndarray, value: np.ndarray, valid: np.ndarray | None = None) -> dict:
+    """Climatología por mes del año y anomalía de cada mes frente a los demás años.
+
+    Los meses con valid=False (por ejemplo, el mes en curso, incompleto) no entran en
+    la climatología ni en la referencia de los demás; su anomalía se calcula igual,
+    pero conviene reemplazarla por una comparación de los mismos días.
+    """
     moy = month % 12
+    valid = np.ones(value.size, dtype=bool) if valid is None else valid
     median = np.zeros(12)
     p25, p75 = np.zeros(12), np.zeros(12)
     anomaly = np.zeros(value.size)       # cociente frente a la mediana de los otros años
     rank = np.zeros(value.size)          # percentil dentro de su mes del año
     for m in range(12):
         idx = np.flatnonzero(moy == m)
+        ok = valid[idx]
         v = value[idx]
-        if v.size == 0:
+        if not ok.any():
             continue
-        median[m], p25[m], p75[m] = np.median(v), *np.percentile(v, [25, 75])
+        median[m], p25[m], p75[m] = np.median(v[ok]), *np.percentile(v[ok], [25, 75])
         for j, i in enumerate(idx):
-            others = np.delete(v, j)
+            others = v[ok & (np.arange(idx.size) != j)]
             ref = np.median(others) if others.size else v[j]
             anomaly[i] = (v[j] + 1.0) / (ref + 1.0)
             rank[i] = 100.0 * (others < v[j]).mean() if others.size else 50.0
     return {"median": median, "p25": p25, "p75": p75, "anomaly": anomaly, "rank": rank}
+
+
+def same_days_comparison(month: np.ndarray, value: np.ndarray, target: int) -> dict:
+    """Compara el mes `target` con el mismo mes de los demás años (mismos días).
+
+    `value` debe venir contado solo hasta el mismo día del mes en todos los años.
+    """
+    sel = (month % 12 == target % 12) & (month != target)
+    ref = value[sel]
+    cur = float(value[month == target][0])
+    med = float(np.median(ref)) if ref.size else cur
+    return {"actual": cur, "mediana": med, "anomalia": (cur + 1.0) / (med + 1.0),
+            "percentil": float(100.0 * (ref < cur).mean()) if ref.size else 50.0,
+            "anios_de_referencia": int(ref.size)}

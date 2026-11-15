@@ -67,7 +67,19 @@ def build_calendar(country: str, bbox) -> dict:
     month = c["month"]
     h = hz.harmonize(month, c["terra"], c["aqua"], c["viirs"], s.viirs_last_month,
                      fallback=country_fit(country))
-    st = hz.calendar_stats(month, h["harmonized"])
+    partial = s.partial_days is not None
+    valid = np.ones(month.size, dtype=bool)
+    valid[-1] = not partial
+    st = hz.calendar_stats(month, h["harmonized"], valid)
+    same = None
+    if partial:
+        # el mes en curso se compara con los mismos días de los otros años
+        cp = s.monthly(bbox, max_dom=s.partial_days)
+        f = h["fit"]
+        hp = hz.apply(month, cp["terra"], cp["aqua"], cp["viirs"], s.viirs_last_month,
+                      f["a"], f["b"], f["sigma"])
+        same = hz.same_days_comparison(month, hp["harmonized"], int(month[-1]))
+        st["anomaly"][-1], st["rank"][-1] = same["anomalia"], same["percentil"]
     rows = [{
         "mes": month_label(int(m)), "anio": 2000 + int(m) // 12, "mes_del_anio": int(m) % 12 + 1,
         "armonizado": round(float(h["harmonized"][i]), 1),
@@ -77,6 +89,7 @@ def build_calendar(country: str, bbox) -> dict:
         "viirs": int(c["viirs"][i]) if h["from_viirs"][i] else None,
         "anomalia": round(float(st["anomaly"][i]), 3),
         "percentil": round(float(st["rank"][i]), 1),
+        "parcial": bool(partial and i == month.size - 1),
     } for i, m in enumerate(month)]
 
     years = sorted({r["anio"] for r in rows})
@@ -91,6 +104,12 @@ def build_calendar(country: str, bbox) -> dict:
         trend = {"pct_por_decada": round(float(1000 * slope / tot.mean()), 1)}
 
     last = rows[-1]
+    moy = last["mes_del_anio"] - 1
+    last_info = {**last, "mediana_historica": round(float(st["median"][moy]), 1),
+                 "dias": s.partial_days}
+    if same:
+        last_info.update(mediana_historica=round(same["mediana"], 1),
+                         mediana_mes_completo=round(float(st["median"][moy]), 1))
     return {
         "pais": country, "bbox": bbox, "total_hotspots": int(sum(r["armonizado"] for r in rows)),
         "meses": rows, "anual": annual, "tendencia": trend,
@@ -98,7 +117,8 @@ def build_calendar(country: str, bbox) -> dict:
                           "mediana": round(float(st["median"][m]), 1),
                           "p25": round(float(st["p25"][m]), 1),
                           "p75": round(float(st["p75"][m]), 1)} for m in range(12)],
-        "ultimo_mes": {**last, "mediana_historica": round(float(st["median"][last["mes_del_anio"] - 1]), 1)},
+        "ultimo_mes": last_info,
+        "cobertura": coverage(s),
         "armonizacion": {**h["fit"], "validacion": h["cv"],
                          "viirs_desde": month_label(hz.VIIRS_START),
                          "viirs_hasta": month_label(s.viirs_last_month)},
@@ -108,6 +128,15 @@ def build_calendar(country: str, bbox) -> dict:
     }
 
 
+def iso(day: int) -> str:
+    return (EPOCH + timedelta(days=int(day))).isoformat()
+
+
+def coverage(s: Store) -> dict:
+    return {"modis_hasta": iso(s.modis_last_day), "viirs_hasta": iso(s.viirs_last_day),
+            "actualizado": s.updated}
+
+
 @app.get("/api/meta")
 def meta():
     out = []
@@ -115,8 +144,8 @@ def meta():
         s = get_store(name)
         out.append({"pais": name, "hotspots": s.n, "bbox": s.bbox,
                     "desde": month_label(s.first_month), "hasta": month_label(s.last_month),
-                    "primer_dia": (EPOCH + timedelta(days=int(s.a["day"][0]))).isoformat(),
-                    "ultimo_dia": (EPOCH + timedelta(days=int(s.a["day"][-1]))).isoformat()})
+                    "primer_dia": iso(s.a["day"].min()), "ultimo_dia": iso(s.last_day),
+                    "cobertura": coverage(s)})
     return {"paises": out}
 
 

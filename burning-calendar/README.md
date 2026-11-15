@@ -1,8 +1,9 @@
 # Calendario de actividad de quema
 
 Aplicación web para el reto de NASA Space Apps de armonización de MODIS y VIIRS.
-Une los hotspots de los dos sensores en una sola serie mensual, de 2000 a 2025,
-y la muestra como un calendario año × mes para un área de interés.
+Une los hotspots de los dos sensores en una sola serie mensual, desde 2000 hasta
+la semana en curso, y la muestra como un calendario año × mes para un área de
+interés.
 
 ## Qué permite hacer
 
@@ -23,9 +24,16 @@ y la muestra como un calendario año × mes para un área de interés.
 
 ```bash
 pip install -r requirements.txt
-python -m server.ingest --country Paraguay     # baja ~500 MB de FIRMS, unos minutos
+python -m server.ingest --country Paraguay            # 2000 a 2025, sin clave (~500 MB)
+export FIRMS_MAP_KEY=tu_clave                         # gratuita en firms.modaps.eosdis.nasa.gov/api/map_key
+python -m server.ingest --country Paraguay --recent   # año en curso, por la API
 uvicorn server.app:app --port 8000
 ```
+
+Para mantener el año en curso al día, repetí el paso `--recent` una vez por día
+(por ejemplo con cron). Solo vuelve a pedir la última semana; el resto queda en
+`data/raw/api/`. La clave se lee de la variable de entorno y nunca se guarda en
+archivos ni aparece en los mensajes de error.
 
 Después abre http://localhost:8000. El nombre del país va en inglés, como lo
 escribe FIRMS (`Argentina`, `Brazil`, `Bolivia`…). Se pueden cargar varios
@@ -40,6 +48,18 @@ FIRMS publica sin clave un CSV por país y por año:
 |---|---|---|---|
 | MODIS | Terra y Aqua | noviembre de 2000 a 2025 | 1 km |
 | VIIRS | S-NPP | enero de 2012 a 2025 | 375 m |
+
+El año en curso llega por la API de área de FIRMS. Usa el archivo estándar (SP)
+mientras existe y el de tiempo casi real (NRT) después; FIRMS informa hasta qué
+día llega cada uno. Dos diferencias con el archivo por país:
+
+- **La API devuelve un rectángulo, no el país.** Se recorta con el contorno de
+  Natural Earth 1:50m ensanchado 2 km, que conserva el 99,96 % del archivo de
+  Paraguay. Sin el recorte, el 39 % de los hotspots de una muestra eran de
+  Argentina, Bolivia o Brasil.
+- **Las fuentes NRT no traen la columna `type`.** Un hotspot NRT en el mismo
+  lugar (celda de 1 km) donde el archivo registró antorchas o volcanes se trata
+  como fuente fija; el resto, como fuego de vegetación.
 
 Solo se cuentan fuegos de vegetación (tipo 0) con confianza nominal o alta.
 Quedan afuera volcanes, fuentes fijas como antorchas de gas y detecciones
@@ -59,6 +79,16 @@ origen deje de importar:
    nivel de actividad.
 3. **Serie final.** Desde febrero de 2012 es VIIRS observado. Antes, MODIS
    convertido, con una banda de incertidumbre del 90 % tomada de los residuos.
+   Si VIIRS se corta antes que MODIS (como S-NPP NRT, que hoy llega solo al 2
+   de noviembre de 2026), el mes que VIIRS no cubre entero también se arma con
+   MODIS convertido.
+
+### El mes en curso
+
+Un mes incompleto no se compara con meses enteros: los hotspots del 1 al 15 de
+noviembre se comparan con la mediana del 1 al 15 de noviembre de los demás
+años, todos en la misma escala armonizada. En el calendario el mes en curso
+aparece rayado y no entra en la climatología.
 
 Si el área tiene menos de 18 meses con fuego en el período común, se usa el
 ajuste de todo el país y la aplicación lo avisa.
@@ -78,9 +108,8 @@ predicho difiere del observado en un 7 % en un mes típico.
 
 ## Límites
 
-- **Termina en diciembre de 2025.** Los archivos por país se publican por año
-  completo. Para el año en curso hace falta la API de FIRMS con una MAP_KEY, que
-  todavía no está integrada.
+- **El año en curso depende de la API y de su clave.** Sin `--recent`, la serie
+  termina en diciembre del año pasado.
 - **Es una armonización estadística de conteos.** Supone que la relación entre
   MODIS y VIIRS de 2012–2025 vale también para 2000–2011. No corrige nubes ni
   cambios de órbita.

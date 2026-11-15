@@ -1,6 +1,8 @@
 """Hotspots de un país en memoria, con consultas por área y por fecha."""
 from __future__ import annotations
 
+import calendar
+import json
 import os
 from datetime import date, timedelta
 
@@ -16,17 +18,57 @@ def day_number(d: date) -> int:
     return (d - EPOCH).days
 
 
+def _month_of(day: int) -> int:
+    d = EPOCH + timedelta(days=int(day))
+    return (d.year - 2000) * 12 + d.month - 1
+
+
+def _is_month_end(day: int) -> bool:
+    d = EPOCH + timedelta(days=int(day))
+    return d.day == calendar.monthrange(d.year, d.month)[1]
+
+
 class Store:
+    """Archivo por país más, si existe, el año en curso bajado por la API.
+
+    Guarda hasta qué día cubre cada sensor: VIIRS S-NPP puede cortarse antes que
+    MODIS, y un mes que VIIRS no cubre entero se arma con MODIS convertido.
+    """
+
     def __init__(self, path: str):
         with np.load(path) as z:
             self.a = {k: z[k] for k in z.files}
         self.name = os.path.splitext(os.path.basename(path))[0].replace("_", " ")
+        # el archivo por país cubre años completos: termina el 31 de diciembre
+        last_year = (EPOCH + timedelta(days=int(self.a["day"].max()))).year
+        archive_last = day_number(date(last_year, 12, 31))
+        self.modis_last_day = self.viirs_last_day = archive_last
+        self.updated = None
+        recent = path[:-4] + "_reciente.npz"
+        if os.path.exists(recent):
+            with np.load(recent) as z:
+                meta = json.loads(str(z["meta"]))
+                new = {k: z[k] for k in self.a}
+            keep = new["day"] > archive_last
+            self.a = {k: np.concatenate([self.a[k], new[k][keep]]) for k in self.a}
+            cov = meta.get("coverage", {})
+            if cov.get("MODIS"):
+                self.modis_last_day = day_number(date.fromisoformat(cov["MODIS"]))
+            if cov.get("VIIRS"):
+                self.viirs_last_day = day_number(date.fromisoformat(cov["VIIRS"]))
+            self.updated = meta.get("fetched")
         day = self.a["day"]
-        self.month = (np.datetime64(EPOCH.isoformat(), "D") + day).astype("datetime64[M]") \
-            .astype(int) - 360                         # meses desde enero de 2000
-        self.first_month, self.last_month = int(self.month.min()), int(self.month.max())
-        viirs = self.a["sat"] == 2
-        self.viirs_last_month = int(self.month[viirs].max()) if viirs.any() else -1
+        dates = np.datetime64(EPOCH.isoformat(), "D") + day
+        self.month = dates.astype("datetime64[M]").astype(int) - 360   # meses desde 2000-01
+        self.dom = (dates - dates.astype("datetime64[M]")).astype(int) + 1
+        self.last_day = max(self.modis_last_day, self.viirs_last_day)
+        self.first_month, self.last_month = int(self.month.min()), _month_of(self.last_day)
+        # último mes que VIIRS cubre entero (o hasta donde llegan los datos)
+        vm = _month_of(self.viirs_last_day)
+        full = _is_month_end(self.viirs_last_day) or self.viirs_last_day >= self.last_day
+        self.viirs_last_month = vm if full else vm - 1
+        self.partial_days = None if _is_month_end(self.last_day) else (EPOCH + timedelta(
+            days=self.last_day)).day
         self.bbox = (float(self.a["lon"].min()), float(self.a["lat"].min()),
                      float(self.a["lon"].max()), float(self.a["lat"].max()))
 
@@ -51,9 +93,14 @@ class Store:
             m &= (a["type"] == 0) & (a["conf"] >= 1)
         return m
 
-    def monthly(self, bbox) -> dict[str, np.ndarray]:
-        """Conteos mensuales por satélite, de first_month a last_month."""
-        m = self.mask(bbox)
+    def monthly(self, bbox, max_dom: int | None = None) -> dict[str, np.ndarray]:
+        """Conteos mensuales por satélite, de first_month a last_month.
+
+        Con max_dom cuenta solo los días 1 a max_dom de cada mes.
+        """
+        m = self.mask(bbox, d1=self.last_day)
+        if max_dom is not None:
+            m &= self.dom <= max_dom
         n = self.last_month - self.first_month + 1
         idx = self.month[m] - self.first_month
         sat = self.a["sat"][m]
@@ -64,7 +111,8 @@ class Store:
 
     def density(self, bbox, d0: int, d1: int, nx: int = 160) -> dict:
         """Grilla de conteos para el mapa. Usa VIIRS si todo el rango cae en su era."""
-        use_viirs = d0 >= VIIRS_FIRST_DAY
+        d1 = min(d1, self.last_day)
+        use_viirs = d0 >= VIIRS_FIRST_DAY and d1 <= self.viirs_last_day
         m = self.mask(bbox, d0, d1)
         m &= (self.a["sat"] == 2) if use_viirs else (self.a["sat"] < 2)
         lat_c = np.deg2rad(0.5 * (bbox[1] + bbox[3]))
@@ -98,4 +146,5 @@ class Store:
 def available() -> list[str]:
     if not os.path.isdir(DATA_DIR):
         return []
-    return sorted(f[:-4] for f in os.listdir(DATA_DIR) if f.endswith(".npz"))
+    return sorted(f[:-4] for f in os.listdir(DATA_DIR)
+                  if f.endswith(".npz") and not f.endswith("_reciente.npz"))
