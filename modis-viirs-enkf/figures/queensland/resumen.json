@@ -1,0 +1,34 @@
+{
+  "bbox": [
+    144.35,
+    -19.75,
+    144.85,
+    -19.25
+  ],
+  "pasadas": 48,
+  "calibracion": {
+    "n_dia": 839,
+    "n_noche": 479,
+    "x_peak_mw": 17.43,
+    "d_min": 0.19369369369369369
+  },
+  "habilidad_pronostico": {
+    "MODIS": {
+      "pasadas": 15,
+      "filtro_factor_mediano": 1.9030310259549168,
+      "persistencia_factor_mediano": 6.735898237931393
+    },
+    "VIIRS": {
+      "pasadas": 31,
+      "filtro_factor_mediano": 3.0944805443515815,
+      "persistencia_factor_mediano": 3.431008529854491
+    }
+  },
+  "frp_total_maximo_mw": 3918.7289163976243,
+  "suma_maxima_de_una_pasada_mw": 2088.3900000000003,
+  "sesgo_modis_sobre_viirs": {
+    "b": 1.0,
+    "desvio_log": 0.3,
+    "pares_casi_simultaneos": 0
+  }
+}

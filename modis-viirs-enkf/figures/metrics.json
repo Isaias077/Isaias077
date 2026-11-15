@@ -1,0 +1,56 @@
+{
+  "seed": 7,
+  "members": 50,
+  "scores": {
+    "Filtro · MODIS + VIIRS": {
+      "rmse_375m": 0.6796041697106348,
+      "rmse_1500m": 0.3670984202309706,
+      "total_mae_pct": 12.494466076343377,
+      "total_bias_pct": -6.125587322663814,
+      "spread_over_rmse": 1.121556765991997
+    },
+    "Base · MODIS + VIIRS": {
+      "rmse_375m": 1.696110474891835,
+      "rmse_1500m": 1.313401290483488,
+      "total_mae_pct": 27.63403468460021,
+      "total_bias_pct": -19.73601940245504
+    },
+    "Filtro · Solo VIIRS": {
+      "rmse_375m": 0.8707596842078502,
+      "rmse_1500m": 0.5363325517674424,
+      "total_mae_pct": 19.909860438722788,
+      "total_bias_pct": -17.806774875286944,
+      "spread_over_rmse": 0.9496993871898877
+    },
+    "Base · Solo VIIRS": {
+      "rmse_375m": 1.9035016919646215,
+      "rmse_1500m": 1.5137737226795422,
+      "total_mae_pct": 30.80366613611864,
+      "total_bias_pct": -13.610496178047697
+    },
+    "Filtro · Solo MODIS": {
+      "rmse_375m": 0.8400306725848716,
+      "rmse_1500m": 0.460916173453899,
+      "total_mae_pct": 9.765654612274336,
+      "total_bias_pct": -4.092503100972382,
+      "spread_over_rmse": 1.311908723004091
+    },
+    "Base · Solo MODIS": {
+      "rmse_375m": 1.5230573375291268,
+      "rmse_1500m": 1.1582919370258475,
+      "total_mae_pct": 28.987879516828652,
+      "total_bias_pct": -25.14834668322527
+    }
+  },
+  "bias_estimate": 0.7808988903320797,
+  "bias_log_sd": 0.045520324223514985,
+  "bias_true": 0.8,
+  "wind_estimate": [
+    0.11202830279637878,
+    0.08844964332387856
+  ],
+  "wind_true": [
+    0.3,
+    0.1
+  ]
+}
