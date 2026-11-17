@@ -2,9 +2,7 @@
 
 ### Senior Backend Engineer
 
-Soy un Ingeniero de Software y estudiante de M.Sc IA especializado en Sistemas Autonomos Criticos y IA aplicado a la medicina soy un apasionado por **diseñar y construir sistemas distribuidos complejos desde cero**. Me fascina ver cómo la arquitectura de software robusta se traduce en productos escalables y de alto impacto que realmente aportan valor.
-
-Actualmente estoy explorando activamente nuevas oportunidades donde pueda contribuir en el diseño de sistemas de misión crítica y resolver desafíos técnicos complejos.
+Soy un Ingeniero de Software y estudiante de una Maestria de IA especializado en Sistemas Autonomos Criticos y IA, soy un apasionado por la ciencia y la investigación. Actualmente estoy llevando a cabo mi transición de SR Software Engineer a Research Scientist en el ámbito de la IA.
 
 <p align="left">
   <a href="https://www.linkedin.com/in/isaiasyafar/" target="_blank">
@@ -78,16 +76,16 @@ Aquí están algunas de las tecnologías con las que más he trabajado:
 <table width="100%">
   <tr>
     <td width="50%" valign="top">
-      <h3>🚀 Recall-PRO</h3>
-      <p>Una aplicación web completa para optimizar el aprendizaje con flashcards, aplicando un <strong>algoritmo de repetición espaciada</strong>. Incluye gestión de mazos, sistema para compartir y un temporizador Pomodoro.</p>
-      <p><strong>Stack:</strong> React, Node.js, MongoDB, JWT.</p>
-      <a href="https://github.com/Isaias077/RecallPro">Ver Repositorio &rarr;</a>
+      <h3>🚀 ms-weather-prediction</h3>
+      <p>Una aplicación para la predicción climática T_Max en zonas áridas atreves del procesamiento de imágenes satelitales MERRA-2 aplicando el modelo de regresión aditiva Prophet de Meta.</p>
+      <p><strong>Stack:</strong> Python, FastAPI, Prophet</p>
+      <a href="https://github.com/Isaias077/ms-weather-prediction">Ver Repositorio &rarr;</a>
     </td>
     <td width="50%" valign="top">
-      <h3>📚 EduVideo.js</h3>
-      <p>Librería de JavaScript ligera y reutilizable para superponer contenido HTML interactivo (quizzes, formularios) sobre videos. <strong>Actualmente en uso por proyectos de la Universidad Nacional de San Juan.</strong></p>
-      <p><strong>Stack:</strong> Vanilla JavaScript (sin dependencias).</p>
-      <a href="https://github.com/Isaias077/EduVideo">Ver Repositorio &rarr;</a>
+      <h3>📚 Birrap</h3>
+      <p>Software de armonizacion de datos satelitales de VIIRS y MODIS para la detección de hotspots atraves de Filtros de Kalman Ensamblados</strong></p>
+      <p><strong>Stack:</strong> Python, Javascript y HTML.</p>
+      <a href="https://github.com/Isaias077/Birrap">Ver Repositorio &rarr;</a>
     </td>
   </tr>
 </table>
