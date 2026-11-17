@@ -1,6 +1,0 @@
-__pycache__/
-.pytest_cache/
-*.pyc
-.firms_cache/
-salida_firms/
-figures/queensland/*.npz
